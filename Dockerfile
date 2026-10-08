@@ -26,7 +26,7 @@ FROM --platform=$TARGETPLATFORM python:3.13-slim AS app
 
 ARG TARGETPLATFORM
 ARG TARGETARCH
-ARG APP_VERSION=0.1.0
+ARG APP_VERSION=0.1.1
 
 LABEL org.opencontainers.image.source="https://github.com/777aca/media2api" \
       org.opencontainers.image.version="${APP_VERSION}" \
