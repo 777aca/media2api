@@ -7,6 +7,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from math import gcd
 from typing import Any, Iterable, Iterator
 
 import tiktoken
@@ -223,7 +224,20 @@ def assistant_history_messages(messages: list[dict[str, Any]]) -> list[str]:
 def build_image_prompt(prompt: str, size: str | None, quality: str = "auto") -> str:
     hints = []
     if size:
-        hints.append(f"输出图片尺寸为 {size}。")
+        size_hint = f"输出图片尺寸为 {size}。"
+        dimensions = re.fullmatch(r"\s*([0-9]+)\s*[xX×]\s*([0-9]+)\s*", size)
+        if dimensions:
+            try:
+                width, height = map(int, dimensions.groups())
+            except ValueError:
+                width = height = 0
+            if width > 0 and height > 0:
+                divisor = gcd(width, height)
+                size_hint = (
+                    f"输出图片目标尺寸：宽 {width} 像素、高 {height} 像素，"
+                    f"宽高比 {width // divisor}:{height // divisor}。请按此宽高比构图。"
+                )
+        hints.append(size_hint)
     if quality:
         hints.append(f"输出图片质量为 {quality}。")
     return f"{prompt.strip()}\n\n{''.join(hints)}" if hints else prompt
