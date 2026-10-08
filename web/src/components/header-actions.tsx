@@ -2,6 +2,7 @@
 
 import { ThemeToggle } from "@/components/theme-toggle";
 import { VersionReleaseDialog } from "@/components/version-release-dialog";
+import { GITHUB_URL } from "@/constants/project";
 import { cn } from "@/lib/utils";
 
 export function HeaderActions({ className, showGithubText = true }: { className?: string; showGithubText?: boolean }) {
@@ -9,7 +10,7 @@ export function HeaderActions({ className, showGithubText = true }: { className?
     <div className={cn("flex items-center gap-2 sm:gap-3", className)}>
       <ThemeToggle />
       <a
-        href="https://github.com/777aca/media2api"
+        href={GITHUB_URL}
         target="_blank"
         rel="noreferrer"
         className="inline-flex h-8 items-center justify-center gap-1.5 text-sm text-stone-500 transition hover:text-stone-900 dark:text-stone-300 dark:hover:text-white"

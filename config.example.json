@@ -1,7 +1,7 @@
 {
   "auth-key": "media2api",
   "refresh_account_interval_minute": 5,
-  "image_retention_days": 15,
+  "image_retention_hours": 360,
   "image_poll_timeout_secs": 120,
   "auto_remove_rate_limited_accounts": false,
   "auto_remove_invalid_accounts": true,

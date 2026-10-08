@@ -108,7 +108,8 @@ class ImageTaskService:
         self.path = path
         self.generation_handler = generation_handler
         self.edit_handler = edit_handler
-        self.retention_days_getter = retention_days_getter or (lambda: config.image_retention_days)
+        # 图片有效期只控制文件；生成记录默认保留，避免缩短有效期时丢失历史。
+        self.retention_days_getter = retention_days_getter
         self._lock = threading.RLock()
         self._tasks: dict[str, dict[str, Any]] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -421,6 +422,8 @@ class ImageTaskService:
         return changed
 
     def _cleanup_locked(self) -> bool:
+        if self.retention_days_getter is None:
+            return False
         try:
             retention_days = max(1, int(self.retention_days_getter()))
         except Exception:

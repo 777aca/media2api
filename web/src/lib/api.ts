@@ -3,6 +3,7 @@ import { parseModelCatalogResponse, type Model } from "@/lib/model-catalog";
 export { parseModelCatalogResponse } from "@/lib/model-catalog";
 export type { Model, CatalogModel, ModelCatalogSync, ModelCatalogResponse } from "@/lib/model-catalog";
 import { httpRequest, request } from "@/lib/request";
+import { parseImageRetentionHours, parseImageRetentionResponse } from "@/lib/image-retention";
 
 export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
@@ -165,6 +166,7 @@ export type SettingsConfig = {
   };
   refresh_account_interval_minute?: number | string;
   image_retention_days?: number | string;
+  image_retention_hours?: number | string;
   image_poll_timeout_secs?: number | string;
   image_account_concurrency?: number | string;
   image_parallel_generation?: boolean;
@@ -598,6 +600,17 @@ export async function fetchManagedImages(filters: { start_date?: string; end_dat
   return httpRequest<{ items: ManagedImage[]; groups: Array<{ date: string; items: ManagedImage[] }> }>(
     `/api/images${params.toString() ? `?${params.toString()}` : ""}`,
   );
+}
+
+export async function fetchImageRetention(): Promise<number> {
+  return parseImageRetentionResponse(await httpRequest<unknown>("/api/settings"));
+}
+
+export async function updateImageRetention(hours: number): Promise<number> {
+  return parseImageRetentionResponse(await httpRequest<unknown>("/api/settings", {
+    method: "POST",
+    body: { image_retention_hours: parseImageRetentionHours(hours) },
+  }));
 }
 
 export async function deleteManagedImages(body: { paths?: string[]; start_date?: string; end_date?: string; all_matching?: boolean }) {

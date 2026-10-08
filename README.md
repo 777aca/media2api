@@ -1,7 +1,8 @@
 <h1 align="center">media2api</h1>
 
-
 <p align="center">media2api 主要是对 ChatGPT 官网相关能力进行逆向整理与封装，提供面向 ChatGPT 图片生成、图片编辑、多图组图编辑场景的 OpenAI 兼容图片 API / 代理，并集成在线画图、号池管理、多种账号导入方式与 Docker 自托管部署能力。</p>
+
+当前版本：[0.1.0](./VERSION) · [GitHub 仓库](https://github.com/777aca/media2api) · [更新日志](./CHANGELOG.md)
 
 > [!WARNING]
 > 免责声明：
@@ -15,26 +16,12 @@
 > - 使用本项目即视为你已充分理解并同意本免责声明全部内容；如因滥用、违规或违法使用造成任何后果，均由使用者自行承担。
 > - 本项目基于对 ChatGPT 官网相关能力的逆向研究实现，存在账号受限、临时封禁或永久封禁的风险。请勿使用你自己的重要账号、常用账号或高价值账号进行测试。
 
-
-## 赞助商
-
-<table>
-  <tr>
-    <td width="190" align="center">
-      <a href="https://www.atlascloud.ai/zh?utm_source=github&utm_medium=link&utm_campaign=media2api"><img src="assets/atlascloud.svg" width="163" alt="Atlas Cloud"></a>
-    </td>
-    <td>
-      <a href="https://www.atlascloud.ai/zh?utm_source=github&utm_medium=link&utm_campaign=media2api">Atlas Cloud</a> is a full-modal AI inference platform that gives developers a single AI API to access video generation, image generation, and LLM APIs. Instead of managing multiple vendor integrations, you connect once and get unified access to 300+ curated models across all modalities. Check out <a href="https://www.atlascloud.ai/console/coding-plan">Atlas Cloud's new coding plan promotion</a> for more budget-friendly API access.
-    </td>
-  </tr>
-</table>
-
 ## 快速开始
 
 ### Docker 运行
 
 ```bash
-git clone git@github.com:777aca/media2api.git
+git clone https://github.com/777aca/media2api.git
 cd media2api
 cp config.example.json config.json
 ```
@@ -89,7 +76,7 @@ docker compose -f docker-compose.warp.yml up -d --build
 启动后端：
 
 ```bash
-git clone git@github.com:777aca/media2api.git
+git clone https://github.com/777aca/media2api.git
 cd media2api
 cp config.example.json config.json
 ```
@@ -101,13 +88,15 @@ uv sync
 uv run main.py
 ```
 
-启动前端：
+另开终端，在项目根目录启动前端：
 
 ```bash
-cd media2api/web
+cd web
 bun install
 bun run dev
 ```
+
+前端开发服务默认使用 `7000` 端口，访问 `http://localhost:7000`。
 
 如果默认后端端口 `8000` 被占用，可用 `uv run uvicorn main:app --host 127.0.0.1 --port 8001` 启动后端，并在 `web/.env.local` 中设置 `NEXT_PUBLIC_API_URL=http://127.0.0.1:8001`，前端开发服务会读取该地址。
 
@@ -155,8 +144,7 @@ environment:
 - 支持通过 `n` 返回多张生成结果
 - 支持生成可编辑 PPT 文件
 - 支持生成可编辑 PSD 文件
-- 支持 Codex 中的画图接口逆向，仅 `Plus` / `Team` / `Pro` 订阅可用，模型别名为 `codex-gpt-image-2`，如有需要可自行在其他场景映射回
-  `gpt-image-2`，用于和官网画图区分；也就意味着同一账号会同时有官网和 Codex 两份生图额度
+- 账号池存在 Codex 来源的 `Plus` / `Team` / `Pro` 账号时，提供 `codex-gpt-image-2` 及对应套餐入口；实际调用权限和额度由上游校验。
 
 ### 在线画图功能
 
@@ -183,25 +171,18 @@ environment:
 - TXT 上传和粘贴兼容 `邮箱----密码----二步验证密钥----Access Token`，也兼容「卡密 N:」前缀和逐行 Token，详见[账号文本导入](./docs/account-import.md)。
 - 支持在设置页配置 `sub2api` 服务器，筛选并批量导入其中的 OpenAI OAuth 账号
 
-### 实验性 / 规划中
+### 图片管理
 
-- 详细状态说明见：[功能清单](./docs/feature-status.en.md)
+- 支持图片预览、日期与标签筛选、批量下载和删除。
+- 支持统一设置本地图片保留时长，最低 1 小时，到期自动清理，保留生成记录和调用日志。
+- 图片有效期适用于已有和新增本地图片，WebDAV 远程副本不受影响。
 
-## 效果展示
+## 项目文档
 
-<table width="100%">
-  <tr>
-    <td width="50%"><img src="https://i.ibb.co/Jj8nfwwP/image.png" alt="image" border="0"></td>
-    <td width="50%"><img src="https://i.ibb.co/pqf235v/image-edit.png" alt="image edit" border="0"></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="https://i.ibb.co/tPcqtVfd/chery-studio.png" alt="chery studio" border="0"></td>
-    <td width="50%"><img src="https://i.ibb.co/PsT9YHBV/account-pool.png" alt="account pool" border="0"></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="https://i.ibb.co/rRWLG08q/new-api.png" alt="new api" border="0"></td>
-  </tr>
-</table>
+- [部署与升级](./docs/deployment.md)
+- [账号文本导入](./docs/account-import.md)
+- [图片 2.5 网页生图接入](./docs/image-models-2.5.md)
+- [图片有效期](./docs/image-retention.md)
 
 ## API
 
@@ -226,10 +207,10 @@ curl http://localhost:8000/v1/models \
 <summary>说明</summary>
 <br>
 
-| 字段   | 说明                                                                                                         |
-|:-----|:-----------------------------------------------------------------------------------------------------------|
-| 返回模型 | `gpt-image-2`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、`gpt-5-mini` |
-| 接入场景 | 可接入 Cherry Studio、New API 等上游或客户端                                                                          |
+| 字段     | 说明                                                                                                               |
+| :------- | :----------------------------------------------------------------------------------------------------------------- |
+| 返回模型 | `gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`，以及满足账号条件时的 Codex 图片入口；以实际响应为准 |
+| 接入场景 | 可接入 Cherry Studio、New API 等上游或客户端                                                                       |
 
 <br>
 </details>
@@ -257,12 +238,12 @@ curl http://localhost:8000/v1/images/generations \
 <summary>字段说明</summary>
 <br>
 
-| 字段                | 说明                                                 |
-|:------------------|:---------------------------------------------------|
+| 字段              | 说明                                                                     |
+| :---------------- | :----------------------------------------------------------------------- |
 | `model`           | 图片模型，当前可用值以 `/v1/models` 返回结果为准，推荐使用 `gpt-image-2` |
-| `prompt`          | 图片生成提示词                                            |
-| `n`               | 生成数量，当前后端限制为 `1-4`                                 |
-| `response_format` | 当前请求模型中包含该字段，默认值为 `b64_json`                       |
+| `prompt`          | 图片生成提示词                                                           |
+| `n`               | 生成数量，当前后端限制为 `1-4`                                           |
+| `response_format` | 当前请求模型中包含该字段，默认值为 `b64_json`                            |
 
 <br>
 </details>
@@ -302,14 +283,14 @@ curl http://localhost:8000/v1/images/edits \
 <summary>字段说明</summary>
 <br>
 
-| 字段          | 说明                                            |
-|:------------|:----------------------------------------------|
-| `model`     | 图片模型， `gpt-image-2`                           |
-| `prompt`    | 图片编辑提示词                                       |
-| `n`         | 生成数量，当前后端限制为 `1-4`                            |
-| `image`     | 需要编辑的图片文件，使用 multipart/form-data 上传           |
+| 字段        | 说明                                                   |
+| :---------- | :----------------------------------------------------- |
+| `model`     | 图片模型， `gpt-image-2`                               |
+| `prompt`    | 图片编辑提示词                                         |
+| `n`         | 生成数量，当前后端限制为 `1-4`                         |
+| `image`     | 需要编辑的图片文件，使用 multipart/form-data 上传      |
 | `images`    | JSON 图片引用数组，支持 `{"image_url": "https://..."}` |
-| `image_url` | 表单模式下也可直接传图片链接，支持重复字段传多张图                     |
+| `image_url` | 表单模式下也可直接传图片链接，支持重复字段传多张图     |
 
 <br>
 </details>
@@ -341,14 +322,14 @@ curl http://localhost:8000/v1/chat/completions \
 <summary>字段说明</summary>
 <br>
 
-| 字段                   | 说明                                                                           |
-|:---------------------|:-----------------------------------------------------------------------------|
-| `model`              | 文本、搜索或图片模型；搜索模型会触发网页搜索兼容逻辑                                                   |
-| `messages`           | 消息数组，支持文本、搜索和图片请求内容                                                          |
-| `n`                  | 图片生成数量，按当前实现解析为图片数量                                                          |
-| `stream`             | 文本、搜索和图片场景均支持，仍在测试                                                           |
+| 字段                 | 说明                                                                               |
+| :------------------- | :--------------------------------------------------------------------------------- |
+| `model`              | 文本、搜索或图片模型；搜索模型会触发网页搜索兼容逻辑                               |
+| `messages`           | 消息数组，支持文本、搜索和图片请求内容                                             |
+| `n`                  | 图片生成数量，按当前实现解析为图片数量                                             |
+| `stream`             | 文本、搜索和图片场景均支持，仍在测试                                               |
 | `tools`              | 文本场景支持 `web_search` / `web_search_preview` / `web_search_preview_2025_03_11` |
-| `web_search_options` | 传入时会触发网页搜索兼容逻辑                                                               |
+| `web_search_options` | 传入时会触发网页搜索兼容逻辑                                                       |
 
 <br>
 </details>
@@ -365,7 +346,7 @@ curl http://localhost:8000/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <auth-key>" \
   -d '{
-    "model": "gpt-5",
+    "model": "gpt-image-2",
     "input": "生成一张未来感城市天际线图片",
     "tools": [
       {
@@ -379,29 +360,17 @@ curl http://localhost:8000/v1/responses \
 <summary>字段说明</summary>
 <br>
 
-| 字段       | 说明                                                                                      |
-|:---------|:----------------------------------------------------------------------------------------|
-| `model`  | 响应中会回显该模型字段，搜索和图片生成会走对应兼容逻辑                                                             |
-| `input`  | 输入内容；搜索使用最后一条用户文本，图片生成需能解析出提示词                                                          |
+| 字段     | 说明                                                                                         |
+| :------- | :------------------------------------------------------------------------------------------- |
+| `model`  | 响应中会回显该模型字段，搜索和图片生成会走对应兼容逻辑                                       |
+| `input`  | 输入内容；搜索使用最后一条用户文本，图片生成需能解析出提示词                                 |
 | `tools`  | 支持 `image_generation`、`web_search`、`web_search_preview`、`web_search_preview_2025_03_11` |
-| `stream` | 已实现，但仍在测试                                                                               |
+| `stream` | 已实现，但仍在测试                                                                           |
 
 <br>
 </details>
 </details>
 
-## 社区支持
+## 反馈与贡献
 
-学 AI , 上 L 站：[LinuxDO](https://linux.do)
-
-## Contributors
-
-感谢所有为本项目做出贡献的开发者：
-
-<a href="https://github.com/777aca/media2api/graphs/contributors">
-  <img alt="Contributors" src="https://contrib.rocks/image?repo=777aca/media2api" />
-</a>
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/chart?repos=777aca/media2api&type=date&legend=top-left)](https://www.star-history.com/?repos=777aca%2Fmedia2api&type=date&legend=top-left)
+使用问题和功能建议请提交到 [本仓库 Issues](https://github.com/777aca/media2api/issues)，代码改进可以提交 Pull Request。

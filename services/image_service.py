@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import threading
 import time
@@ -259,13 +260,15 @@ def compress_images(quality: int = 60) -> dict:
         if not p.is_file():
             continue
         try:
-            orig = p.stat().st_size
+            original_stat = p.stat()
+            orig = original_stat.st_size
             with Image.open(p) as img:
                 img = ImageOps.exif_transpose(img)
                 img.save(str(p) + ".tmp", format="PNG", optimize=True)
             new_size = Path(str(p) + ".tmp").stat().st_size
             if new_size < orig:
                 Path(str(p) + ".tmp").replace(p)
+                os.utime(p, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
                 saved += orig - new_size
                 count += 1
             else:
@@ -350,13 +353,13 @@ def download_images_zip(paths: list[str]) -> io.BytesIO:
 
 
 def _auto_cleanup_worker(stop_event: threading.Event) -> None:
-    """后台线程：每30分钟检查存储，空间低于阈值自动清理最旧图片"""
+    """每分钟按当前有效期清理本地图片，并检查剩余空间。"""
     import shutil
     min_free_mb = getattr(config, "image_min_free_mb", None)
     if min_free_mb is None:
         min_free_mb = 500
 
-    while not stop_event.wait(1800):  # 每30分钟
+    while not stop_event.wait(60):
         try:
             config.cleanup_old_images()
             cleanup_image_thumbnails()

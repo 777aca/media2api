@@ -385,11 +385,19 @@ class ConfigStore:
             return 5
 
     @property
-    def image_retention_days(self) -> int:
+    def image_retention_hours(self) -> int:
         try:
-            return max(1, int(self.data.get("image_retention_days", 30)))
+            if "image_retention_hours" in self.data:
+                return max(1, int(self.data["image_retention_hours"]))
+            # 旧配置按天读取，保持升级前的保留时长。
+            return max(1, int(self.data.get("image_retention_days", 30))) * 24
         except (TypeError, ValueError):
-            return 30
+            return 30 * 24
+
+    @property
+    def image_retention_days(self) -> int | float:
+        hours = self.image_retention_hours
+        return hours // 24 if hours % 24 == 0 else hours / 24
 
     @property
     def image_poll_timeout_secs(self) -> int:
@@ -531,13 +539,22 @@ class ConfigStore:
         return path
 
     def cleanup_old_images(self) -> int:
-        cutoff = time.time() - self.image_retention_days * 86400
+        cutoff = time.time() - self.image_retention_hours * 3600
         removed = 0
-        for path in self.images_dir.rglob("*"):
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink()
-                removed += 1
-        for path in sorted((p for p in self.images_dir.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+        root = self.images_dir.resolve()
+        for path in root.rglob("*"):
+            if path.is_symlink() or not path.resolve().is_relative_to(root):
+                continue
+            try:
+                if path.is_file() and path.stat().st_mtime <= cutoff:
+                    path.unlink()
+                    removed += 1
+            except FileNotFoundError:
+                # 图片可能已被另一个清理请求删除。
+                continue
+        for path in sorted((p for p in root.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+            if path.is_symlink() or not path.resolve().is_relative_to(root):
+                continue
             try:
                 path.rmdir()
             except OSError:
@@ -564,6 +581,7 @@ class ConfigStore:
         data = dict(self.data)
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
         data["image_retention_days"] = self.image_retention_days
+        data["image_retention_hours"] = self.image_retention_hours
         data["image_poll_timeout_secs"] = self.image_poll_timeout_secs
         data["image_poll_interval_secs"] = self.image_poll_interval_secs
         data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
@@ -610,6 +628,18 @@ class ConfigStore:
         return _normalize_third_party_apps_settings(self.data.get("third_party_apps"))
 
     def update(self, data: dict[str, object]) -> dict[str, object]:
+        if "image_retention_hours" in data or "image_retention_days" in data:
+            use_hours = "image_retention_hours" in data
+            value = data["image_retention_hours" if use_hours else "image_retention_days"]
+            limit = 36500 * 24 if use_hours else 36500
+            unit = "小时" if use_hours else "天"
+            if isinstance(value, str) and value.strip().isascii() and value.strip().isdecimal():
+                value = int(value.strip())
+            if type(value) is not int or not 1 <= value <= limit:
+                raise ValueError(f"图片有效期必须是 1 至 {limit} 的整数（{unit}）")
+            hours = value if use_hours else value * 24
+            data = {**data, "image_retention_hours": hours,
+                    "image_retention_days": hours // 24 if hours % 24 == 0 else hours / 24}
         next_data = dict(self.data)
         next_data.update(dict(data or {}))
         if "backup" in next_data:
@@ -633,8 +663,13 @@ class ConfigStore:
                     incoming_runtime["_existing_cf_clearance"] = previous_clearance.get("cf_clearance")
             next_data["proxy_runtime"] = _normalize_proxy_runtime_settings(incoming_runtime)
         next_data.pop("backup_state", None)
+        previous_data = self.data
         self.data = next_data
-        self._save()
+        try:
+            self._save()
+        except Exception:
+            self.data = previous_data
+            raise
         return self.get()
 
     def get_backup_settings(self) -> dict[str, object]:

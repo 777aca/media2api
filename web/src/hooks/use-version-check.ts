@@ -4,12 +4,11 @@ import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import webConfig from "@/constants/common-env";
-import { parseChangelog, type ReleaseInfo } from "@/lib/release";
+import { GITHUB_RAW_URL } from "@/constants/project";
+import { parseProjectRelease, type ReleaseInfo } from "@/lib/release";
 
-const latestVersionUrl =
-  "https://raw.githubusercontent.com/777aca/media2api/main/VERSION";
-const latestChangelogUrl =
-  "https://raw.githubusercontent.com/777aca/media2api/main/CHANGELOG.md";
+const latestVersionUrl = `${GITHUB_RAW_URL}/VERSION`;
+const latestChangelogUrl = `${GITHUB_RAW_URL}/CHANGELOG.md`;
 
 function readLocalReleases(): ReleaseInfo[] {
   return JSON.parse(process.env.NEXT_PUBLIC_APP_RELEASES || "[]");
@@ -53,13 +52,16 @@ export function useVersionCheck() {
           versionResponse.text(),
           changelogResponse.text(),
         ]);
-        setLatestVersion(version.trim() || currentVersion);
-        if (changelog.trim()) setReleases(parseChangelog(changelog));
+        const release = parseProjectRelease(version, changelog);
+        setLatestVersion(release.version);
+        setReleases(release.releases);
         if (showMessage) toast.success("已获取最新版本信息");
-      } catch {
+      } catch (error) {
         setLatestVersion(currentVersion);
         setReleases(localReleases);
-        if (showMessage) toast.error("获取最新版本信息失败");
+        if (showMessage) toast.error(error instanceof Error && error.message.startsWith("仓库")
+          ? error.message
+          : "获取最新版本信息失败");
       } finally {
         setChecking(false);
       }

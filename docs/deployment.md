@@ -169,6 +169,8 @@ bun install
 bun run dev
 ```
 
+前端开发服务默认使用 `7000` 端口，访问 `http://localhost:7000`。
+
 源码方式运行时，后端默认读取项目根目录的 `config.json` 和 `data/`。
 
 后端默认端口为 `8000`。端口被其他项目占用时，可在项目根目录运行 `uv run uvicorn main:app --host 127.0.0.1 --port 8001`，并在 `web/.env.local` 中设置 `NEXT_PUBLIC_API_URL=http://127.0.0.1:8001`，让前端开发服务连接对应后端。此配置只覆盖开发环境 API 地址，生产构建继续使用同源接口。

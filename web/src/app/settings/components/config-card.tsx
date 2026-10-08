@@ -23,7 +23,7 @@ export function ConfigCard() {
   const isLoadingConfig = useSettingsStore((state) => state.isLoadingConfig);
   const isSavingConfig = useSettingsStore((state) => state.isSavingConfig);
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
-  const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
+  const setImageRetentionHours = useSettingsStore((state) => state.setImageRetentionHours);
   const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
   const setImageAccountConcurrency = useSettingsStore((state) => state.setImageAccountConcurrency);
   const setImageSettleEnabled = useSettingsStore((state) => state.setImageSettleEnabled);
@@ -178,14 +178,19 @@ export function ConfigCard() {
             <p className="text-xs text-stone-500">模型名称以 -standard、-extended 或 -max 结尾时，模型后缀优先。</p>
           </div>
           <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片自动清理</label>
+            <label htmlFor="settings-image-retention-hours" className="text-sm text-stone-700">图片有效期（小时）</label>
             <Input
-              value={String(config?.image_retention_days || "")}
-              onChange={(event) => setImageRetentionDays(event.target.value)}
-              placeholder="30"
+              id="settings-image-retention-hours"
+              type="number"
+              min={1}
+              max={36500 * 24}
+              step={1}
+              value={String(config?.image_retention_hours || "")}
+              onChange={(event) => setImageRetentionHours(event.target.value)}
+              placeholder="360"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">自动删除多少天前的本地图片。</p>
+            <p className="text-xs text-stone-500">最少 1 小时，24 小时 = 1 天。与图片管理共用设置。到期清理本地图片，保留生成记录和调用日志；不删除 WebDAV 远程副本。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">图片轮询超时</label>
@@ -252,7 +257,7 @@ export function ConfigCard() {
             <Input
               value={String(config?.image_timeout_retry_secs || "30")}
               onChange={(event) => setImageTimeoutRetrySecs(event.target.value)}
-              placeholder="30"
+              placeholder="360"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
             <p className="text-xs text-stone-500">单位秒，超时后点击"继续等待"额外等待的时间。</p>

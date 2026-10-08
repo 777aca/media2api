@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import webConfig from "@/constants/common-env";
+import { GITHUB_URL } from "@/constants/project";
 import { useVersionCheck } from "@/hooks/use-version-check";
 import { cn } from "@/lib/utils";
 
@@ -96,7 +97,7 @@ export function VersionReleaseDialog({ className }: { className?: string }) {
             ))}
           </div>
           <Button variant="outline" size="sm" asChild>
-            <a href="https://github.com/777aca/media2api" target="_blank" rel="noreferrer">
+            <a href={GITHUB_URL} target="_blank" rel="noreferrer">
               前往 GitHub 更新
             </a>
           </Button>
