@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { DateRangeFilter } from "@/components/date-range-filter";
 import { ImageLightbox } from "@/components/image-lightbox";
+import { LogRequestParameters } from "@/components/log-request-parameters";
 import { ImageThumbnail, getImageThumbnailUrl } from "@/components/image-thumbnail";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -280,9 +281,13 @@ function LogsContent() {
         <DialogContent className="flex h-[min(88vh,860px)] w-[min(92vw,920px)] flex-col overflow-hidden rounded-2xl p-0">
           <DialogHeader className="shrink-0 border-b border-stone-100 px-6 py-5">
             <DialogTitle>日志详情</DialogTitle>
+            <DialogDescription className="sr-only">查看调用信息、传入参数和生成结果。</DialogDescription>
           </DialogHeader>
           <div className="flex-1 overflow-y-auto px-6 py-5">
             <div className="space-y-4">
+              {detailLog?.type === LogType.Call ? (
+                <LogRequestParameters parameters={detailLog.detail?.request_params} />
+              ) : null}
               <div className="grid gap-3 rounded-xl border border-stone-200 bg-white p-4 text-sm text-stone-600 md:grid-cols-2">
                 {Object.entries(detailLog?.detail || {})
                   .filter(([key, value]) => key !== "urls" && typeof value !== "object")
@@ -310,9 +315,12 @@ function LogsContent() {
                   ))}
                 </div>
               ) : null}
-              <pre className="max-h-[72vh] overflow-auto rounded-xl border border-stone-200 bg-stone-50 p-4 text-xs leading-6 text-stone-700">
-                {JSON.stringify(detailLog?.detail || {}, null, 2)}
-              </pre>
+              <details className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+                <summary className="cursor-pointer text-sm text-stone-600">完整日志 JSON</summary>
+                <pre className="mt-3 max-h-[48vh] overflow-auto text-xs leading-6 text-stone-700">
+                  {JSON.stringify(detailLog?.detail || {}, null, 2)}
+                </pre>
+              </details>
             </div>
           </div>
         </DialogContent>

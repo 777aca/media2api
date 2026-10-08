@@ -11,6 +11,7 @@ from typing import Any
 from services.config import DATA_DIR, config
 from services.content_filter import request_text
 from services.log_service import LOG_TYPE_CALL, log_service
+from services.request_log import sanitize_request_parameters
 from services.protocol import openai_v1_image_edit, openai_v1_image_generations
 
 TASK_STATUS_QUEUED = "queued"
@@ -130,6 +131,7 @@ class ImageTaskService:
         size: str | None,
         quality: str = "auto",
         base_url: str = "",
+        request_params: dict[str, object] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "prompt": prompt,
@@ -140,7 +142,7 @@ class ImageTaskService:
             "response_format": "url",
             "base_url": base_url,
         }
-        return self._submit(identity, client_task_id=client_task_id, mode="generate", payload=payload)
+        return self._submit(identity, client_task_id=client_task_id, mode="generate", payload=payload, request_params=request_params)
 
     def submit_edit(
         self,
@@ -154,6 +156,7 @@ class ImageTaskService:
         base_url: str = "",
         images: list[tuple[bytes, str, str]] | None = None,
         masks: list[tuple[bytes, str, str]] | None = None,
+        request_params: dict[str, object] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "prompt": prompt,
@@ -166,7 +169,7 @@ class ImageTaskService:
             "response_format": "url",
             "base_url": base_url,
         }
-        return self._submit(identity, client_task_id=client_task_id, mode="edit", payload=payload)
+        return self._submit(identity, client_task_id=client_task_id, mode="edit", payload=payload, request_params=request_params)
 
     def list_tasks(self, identity: dict[str, object], task_ids: list[str]) -> dict[str, Any]:
         owner = _owner_id(identity)
@@ -199,6 +202,7 @@ class ImageTaskService:
         client_task_id: str,
         mode: str,
         payload: dict[str, Any],
+        request_params: dict[str, object] | None = None,
     ) -> dict[str, Any]:
         task_id = _clean(client_task_id)
         if not task_id:
@@ -225,6 +229,9 @@ class ImageTaskService:
                 "created_at": now,
                 "updated_at": now,
                 "created_ts": time.time(),
+                "request_params": sanitize_request_parameters(request_params if request_params is not None else {
+                    name: value for name, value in payload.items() if name != "base_url"
+                }),
             }
             self._tasks[key] = task
             self._save_locked()
@@ -249,6 +256,8 @@ class ImageTaskService:
         model: str,
     ) -> None:
         started = time.time()
+        with self._lock:
+            request_params = self._tasks.get(key, {}).get("request_params")
         self._update_task(key, status=TASK_STATUS_RUNNING, error="")
         # 创建进度回调，每个步骤完成后更新任务状态
         def progress_callback(step: str) -> None:
@@ -284,6 +293,7 @@ class ImageTaskService:
                 started,
                 "调用完成",
                 request_preview=request_text(payload.get("prompt")),
+                request_params=request_params,
                 urls=_collect_image_urls(data),
                 account_email=account_email,
             )
@@ -302,6 +312,7 @@ class ImageTaskService:
                 started,
                 "调用失败",
                 request_preview=request_text(payload.get("prompt")),
+                request_params=request_params,
                 status="failed",
                 error=error_message,
                 account_email=account_email,
@@ -316,6 +327,7 @@ class ImageTaskService:
         suffix: str,
         *,
         request_preview: str = "",
+        request_params: dict[str, object] | None = None,
         status: str = "success",
         error: str = "",
         urls: list[str] | None = None,
@@ -335,7 +347,9 @@ class ImageTaskService:
             "status": status,
         }
         if request_preview:
-            detail["request_text"] = request_preview
+            detail["request_text"] = sanitize_request_parameters({"text": request_preview})["text"]
+        if request_params is not None:
+            detail["request_params"] = request_params
         if error:
             detail["error"] = error
         if account_email:
@@ -394,6 +408,8 @@ class ImageTaskService:
                 "duration_ms": item.get("duration_ms"),
             }
             data = item.get("data")
+            if isinstance(item.get("request_params"), dict):
+                task["request_params"] = sanitize_request_parameters(item["request_params"])
             if isinstance(data, list):
                 task["data"] = data
             usage = item.get("usage")
@@ -485,6 +501,11 @@ class ImageTaskService:
     ) -> None:
         """后台线程：继续轮询已有 conversation_id 的图片结果。"""
         started = time.time()
+        with self._lock:
+            original_params = self._tasks.get(key, {}).get("request_params")
+        request_params = {"task_id": key.split(":", 1)[-1], "extra_timeout_secs": extra_timeout_secs}
+        if original_params is not None:
+            request_params["original_request"] = original_params
         backend = None
         try:
             from services.openai_backend_api import OpenAIBackendAPI
@@ -529,6 +550,7 @@ class ImageTaskService:
                 model,
                 started,
                 "调用完成（续轮询）",
+                request_params=request_params,
                 status="success",
                 urls=_collect_image_urls(data),
             )
@@ -542,6 +564,7 @@ class ImageTaskService:
                 model,
                 started,
                 "调用失败（续轮询）",
+                request_params=request_params,
                 status="failed",
                 error=error_message,
             )

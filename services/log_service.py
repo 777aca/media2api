@@ -16,6 +16,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from services.config import DATA_DIR
+from services.request_log import sanitize_request_parameters
 from services.protocol.error_response import anthropic_error_response, openai_error_response
 from utils.helper import anthropic_sse_stream, sse_json_stream
 
@@ -171,7 +172,7 @@ def _strip_internal_response_fields(value: object) -> object:
 
 
 def _request_excerpt(text: object, limit: int = 1000) -> str:
-    value = str(text or "").strip()
+    value = str(sanitize_request_parameters({"text": str(text or "")})["text"]).strip()
     if not value:
         return ""
     normalized = " ".join(value.split())
@@ -230,6 +231,11 @@ class LoggedCall:
     started: float = field(default_factory=time.time)
     request_text: str = ""
     request_shape: dict[str, int] | None = None
+    request_params: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        if self.request_params is not None:
+            self.request_params = sanitize_request_parameters(self.request_params)
 
     async def run(self, handler, *args, sse: str = "openai"):
         from services.protocol.conversation import ImageGenerationError
@@ -329,6 +335,8 @@ class LoggedCall:
             detail["request_text"] = request_excerpt
         if self.request_shape:
             detail["request_shape"] = self.request_shape
+        if self.request_params is not None:
+            detail["request_params"] = self.request_params
         if error:
             detail["error"] = error
             if isinstance(error_code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code):

@@ -12,6 +12,7 @@ from services.account_service import account_service
 from services.config import DATA_DIR
 from services.content_filter import request_text
 from services.log_service import LOG_TYPE_CALL, log_service
+from services.request_log import sanitize_request_parameters
 from services.openai_backend_api import EDITABLE_FILE_MODEL, OpenAIBackendAPI
 from utils.helper import new_uuid
 
@@ -94,11 +95,11 @@ class EditableFileTaskService:
             if self._recover_unfinished_locked():
                 self._save_locked()
 
-    def submit_ppt(self, identity: dict[str, object], *, client_task_id: str = "", prompt: str = "", base64_images: list[str] | None = None, base_url: str = "") -> dict[str, Any]:
-        return self._submit(identity, client_task_id=client_task_id, kind="ppt", prompt=prompt, base64_images=base64_images or [], base_url=base_url)
+    def submit_ppt(self, identity: dict[str, object], *, client_task_id: str = "", prompt: str = "", base64_images: list[str] | None = None, base_url: str = "", request_params: dict[str, object] | None = None) -> dict[str, Any]:
+        return self._submit(identity, client_task_id=client_task_id, kind="ppt", prompt=prompt, base64_images=base64_images or [], base_url=base_url, request_params=request_params)
 
-    def submit_psd(self, identity: dict[str, object], *, client_task_id: str = "", prompt: str = "", base64_images: list[str] | None = None, base_url: str = "") -> dict[str, Any]:
-        return self._submit(identity, client_task_id=client_task_id, kind="psd", prompt=prompt, base64_images=base64_images or [], base_url=base_url)
+    def submit_psd(self, identity: dict[str, object], *, client_task_id: str = "", prompt: str = "", base64_images: list[str] | None = None, base_url: str = "", request_params: dict[str, object] | None = None) -> dict[str, Any]:
+        return self._submit(identity, client_task_id=client_task_id, kind="psd", prompt=prompt, base64_images=base64_images or [], base_url=base_url, request_params=request_params)
 
     def list_tasks(self, identity: dict[str, object], task_ids: list[str]) -> dict[str, Any]:
         owner = _owner_id(identity)
@@ -111,7 +112,7 @@ class EditableFileTaskService:
         items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
         return {"items": [_public_task(item) for item in items], "missing_ids": []}
 
-    def _submit(self, identity: dict[str, object], *, client_task_id: str, kind: str, prompt: str, base64_images: list[str], base_url: str) -> dict[str, Any]:
+    def _submit(self, identity: dict[str, object], *, client_task_id: str, kind: str, prompt: str, base64_images: list[str], base_url: str, request_params: dict[str, object] | None = None) -> dict[str, Any]:
         task_id = _clean(client_task_id) or new_uuid()
         owner = _owner_id(identity)
         key = _task_key(owner, task_id)
@@ -123,10 +124,13 @@ class EditableFileTaskService:
             self._tasks[key] = {"id": task_id, "owner_id": owner, "status": TASK_STATUS_QUEUED, "kind": kind, "model": EDITABLE_FILE_MODEL, "created_at": now, "updated_at": now, "created_ts": ts, "updated_ts": ts}
             task = dict(self._tasks[key])
             self._save_locked()
-        threading.Thread(target=self._run_task, args=(key, kind, prompt, base64_images, dict(identity), base_url), name=f"{kind}-file-task-{task_id[:16]}", daemon=True).start()
+        snapshot = sanitize_request_parameters(request_params if request_params is not None else {
+            "client_task_id": client_task_id, "prompt": prompt, "base64_images": base64_images,
+        })
+        threading.Thread(target=self._run_task, args=(key, kind, prompt, base64_images, dict(identity), base_url, snapshot), name=f"{kind}-file-task-{task_id[:16]}", daemon=True).start()
         return _public_task(task)
 
-    def _run_task(self, key: str, kind: str, prompt: str, base64_images: list[str], identity: dict[str, object], base_url: str) -> None:
+    def _run_task(self, key: str, kind: str, prompt: str, base64_images: list[str], identity: dict[str, object], base_url: str, request_params: dict[str, object] | None = None) -> None:
         started = time.time()
         token = ""
         account_email = ""
@@ -144,11 +148,11 @@ class EditableFileTaskService:
             account_service.mark_text_used(token)
             data = {"conversation_id": result.conversation_id, "primary_url": _file_url(result.primary_path, base_url), "zip_url": _file_url(result.zip_path, base_url)}
             self._update_task(key, status=TASK_STATUS_SUCCESS, result=data, account_email=account_email, error="", ended_ts=time.time())
-            self._log_call(identity, kind, started, request_text(prompt), account_email=account_email, result=data)
+            self._log_call(identity, kind, started, request_text(prompt), request_params=request_params, account_email=account_email, result=data)
         except Exception as exc:
             error = str(exc) or "editable file task failed"
             self._update_task(key, status=TASK_STATUS_ERROR, error=error, account_email=account_email, ended_ts=time.time())
-            self._log_call(identity, kind, started, request_text(prompt), status="failed", error=error, account_email=account_email)
+            self._log_call(identity, kind, started, request_text(prompt), request_params=request_params, status="failed", error=error, account_email=account_email)
         finally:
             if backend is not None:
                 backend.close()
@@ -227,6 +231,7 @@ class EditableFileTaskService:
             started: float,
             request_preview: str,
             *,
+            request_params: dict[str, object] | None = None,
             status: str = "success",
             error: str = "",
             account_email: str = "",
@@ -244,7 +249,9 @@ class EditableFileTaskService:
             "status": status,
         }
         if request_preview:
-            detail["request_text"] = request_preview
+            detail["request_text"] = sanitize_request_parameters({"text": request_preview})["text"]
+        if request_params is not None:
+            detail["request_params"] = request_params
         if account_email:
             detail["account_email"] = account_email
         if error:
