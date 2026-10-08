@@ -186,7 +186,7 @@ export function TopNav() {
             >
               media2api
             </Link>
-            <HeaderActions className="ml-auto sm:hidden" showGithubText={false} />
+            <HeaderActions className="ml-auto sm:hidden" showGithubText={false} isAdmin={session.role === "admin"} />
           </div>
           <nav className="hide-scrollbar -mx-1 hidden min-w-0 flex-1 gap-1 overflow-x-auto px-1 sm:mx-0 sm:flex sm:justify-center sm:gap-8 sm:overflow-visible sm:px-0">
             {canvasHref ? (
@@ -218,7 +218,7 @@ export function TopNav() {
             })}
           </nav>
           <div className="hidden items-center justify-end gap-2 sm:flex sm:gap-3">
-            <HeaderActions />
+            <HeaderActions isAdmin={session.role === "admin"} />
             <span className="hidden rounded-md bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-500 dark:bg-white/8 dark:text-stone-300 sm:inline-block sm:text-[11px]">
               {roleLabel} · {displayName}
             </span>

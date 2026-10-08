@@ -15,10 +15,22 @@ COPY web ./
 RUN NEXT_PUBLIC_APP_VERSION="$(cat /app/VERSION)" npm run build
 
 
+FROM --platform=$TARGETPLATFORM python:3.13-slim AS updater
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY services/docker_update ./services/docker_update
+CMD ["python", "-m", "services.docker_update.worker"]
+
 FROM --platform=$TARGETPLATFORM python:3.13-slim AS app
 
 ARG TARGETPLATFORM
 ARG TARGETARCH
+ARG APP_VERSION=0.1.0
+
+LABEL org.opencontainers.image.source="https://github.com/777aca/media2api" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      io.media2api.update.protocol="1"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

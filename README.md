@@ -183,6 +183,7 @@ environment:
 - [账号文本导入](./docs/account-import.md)
 - [图片 2.5 网页生图接入](./docs/image-models-2.5.md)
 - [图片有效期](./docs/image-retention.md)
+- [Docker 一键更新与回滚](./docs/version-updates.md)
 
 ## API
 

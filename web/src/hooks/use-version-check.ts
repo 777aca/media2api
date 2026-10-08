@@ -1,87 +1,90 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-
 import webConfig from "@/constants/common-env";
-import { GITHUB_RAW_URL } from "@/constants/project";
-import { parseProjectRelease, type ReleaseInfo } from "@/lib/release";
-
-const latestVersionUrl = `${GITHUB_RAW_URL}/VERSION`;
-const latestChangelogUrl = `${GITHUB_RAW_URL}/CHANGELOG.md`;
+import { type ReleaseInfo } from "@/lib/release";
+import { fetchSystemUpdate, isUpdateRunning, submitSystemUpdate, type SystemUpdate } from "@/lib/system-update";
 
 function readLocalReleases(): ReleaseInfo[] {
   return JSON.parse(process.env.NEXT_PUBLIC_APP_RELEASES || "[]");
 }
 
-function toVersionParts(version: string) {
-  const match = version.trim().match(/^v?(\d+)\.(\d+)\.(\d+)/);
-  return match ? match.slice(1).map(Number) : null;
-}
-
-function isNewerVersion(latestVersion: string, currentVersion: string) {
-  const latest = toVersionParts(latestVersion);
-  const current = toVersionParts(currentVersion);
-  if (!latest || !current) return false;
-  return latest.some(
-    (value, index) =>
-      value > current[index] &&
-      latest.slice(0, index).every((part, prevIndex) => part === current[prevIndex]),
-  );
-}
-
-export function useVersionCheck() {
-  const currentVersion = webConfig.appVersion;
-  const localReleases = useMemo(readLocalReleases, []);
-  const [latestVersion, setLatestVersion] = useState(currentVersion);
-  const [releases, setReleases] = useState<ReleaseInfo[]>(localReleases);
+export function useVersionCheck(isAdmin: boolean) {
+  const releases = useMemo(readLocalReleases, []);
+  const [state, setState] = useState<SystemUpdate | null>(null);
   const [checking, setChecking] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [connectionError, setConnectionError] = useState("");
   const [open, setOpen] = useState(false);
-  const hasNewVersion = isNewerVersion(latestVersion, currentVersion);
+  const checkingRef = useRef(false);
+  const refreshedJob = useRef("");
+  const running = isUpdateRunning(state?.job ?? null);
 
-  const checkLatestRelease = useCallback(
-    async (showMessage = false) => {
-      setChecking(true);
-      try {
-        const [versionResponse, changelogResponse] = await Promise.all([
-          fetch(latestVersionUrl),
-          fetch(latestChangelogUrl),
-        ]);
-        if (!versionResponse.ok || !changelogResponse.ok) throw new Error();
-        const [version, changelog] = await Promise.all([
-          versionResponse.text(),
-          changelogResponse.text(),
-        ]);
-        const release = parseProjectRelease(version, changelog);
-        setLatestVersion(release.version);
-        setReleases(release.releases);
-        if (showMessage) toast.success("已获取最新版本信息");
-      } catch (error) {
-        setLatestVersion(currentVersion);
-        setReleases(localReleases);
-        if (showMessage) toast.error(error instanceof Error && error.message.startsWith("仓库")
-          ? error.message
-          : "获取最新版本信息失败");
-      } finally {
-        setChecking(false);
-      }
-    },
-    [currentVersion, localReleases],
-  );
+  const checkLatestRelease = useCallback(async (force = false) => {
+    if (!isAdmin || checkingRef.current) return;
+    checkingRef.current = true;
+    setChecking(true);
+    try {
+      const next = await fetchSystemUpdate(force);
+      setState(next);
+      setConnectionError("");
+      if (force && !next.error) toast.success(next.latest ? "已获取最新发布版本" : "本项目暂未发布正式版本");
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : "版本检查失败");
+    } finally {
+      checkingRef.current = false;
+      setChecking(false);
+    }
+  }, [isAdmin]);
 
-  const openReleaseModal = () => {
-    setOpen(true);
+  useEffect(() => {
+    if (!isAdmin) return;
     void checkLatestRelease();
+    const timer = window.setInterval(() => { void checkLatestRelease(); }, 300000);
+    return () => window.clearInterval(timer);
+  }, [isAdmin, checkLatestRelease]);
+
+  useEffect(() => {
+    if (!isAdmin || (!open && !running)) return;
+    let active = true;
+    let pending = false;
+    const poll = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const next = await fetchSystemUpdate(false, true);
+        if (active) {
+          setState(previous => ({ ...next, latest: next.latest ?? previous?.latest ?? null,
+            checked_at: next.checked_at ?? previous?.checked_at ?? null,
+            error: next.error ?? previous?.error ?? null,
+            has_update: next.latest ? next.has_update : Boolean(previous?.has_update && previous.current_version === next.current_version) }));
+          setConnectionError("");
+          if (next.job && ["succeeded", "rolled_back"].includes(next.job.state) && refreshedJob.current !== next.job.id) {
+            refreshedJob.current = next.job.id;
+            void checkLatestRelease();
+          }
+        }
+      } catch (error) {
+        if (active) setConnectionError(running ? "服务切换中，正在等待重新连接…" : error instanceof Error ? error.message : "获取更新状态失败");
+      } finally { pending = false; }
+    };
+    const timer = window.setInterval(() => { void poll(); }, running ? 2000 : 10000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [isAdmin, open, running, checkLatestRelease]);
+
+  const submit = async (operation: "update" | "rollback", version: string) => {
+    setSubmitting(true);
+    try {
+      setState(await submitSystemUpdate(operation, version));
+      setConnectionError("");
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : "提交更新任务失败");
+    } finally { setSubmitting(false); }
   };
 
-  return {
-    open,
-    setOpen,
-    openReleaseModal,
-    latestVersion,
-    releases,
-    checking,
-    hasNewVersion,
-    checkLatestRelease,
-  };
+  return { open, setOpen, openReleaseModal: () => { setOpen(true); void checkLatestRelease(); },
+    currentVersion: state?.current_version ?? webConfig.appVersion,
+    latestVersion: state?.latest?.version ?? "—", releases, checking, submitting, running,
+    hasNewVersion: state?.has_update ?? false, checkLatestRelease, state, connectionError, submit };
 }
