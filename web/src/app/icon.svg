@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>media2api</title>
+  <rect width="64" height="64" rx="16" fill="#1c1917" />
+  <path d="M16 46V18h7l9 14 9-14h7v28h-8V31l-8 12-8-12v15Z" fill="#fafaf9" />
+</svg>
