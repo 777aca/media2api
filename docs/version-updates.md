@@ -47,7 +47,7 @@ WARP 部署在 `.env` 增加 `MEDIA2API_UPDATE_CONTAINER=media2api-warp`，并�
 python scripts/prepare_release.py --tag v0.1.0
 ```
 
-维护者按正常发布流程推送与 VERSION 匹配的 `vX.Y.Z` 标签。GitHub Actions 校验版本、发布 amd64/arm64 业务镜像与 updater 镜像，然后创建正式 Release，附带 `media2api-release.json`，其字段为 `schema`、`version`、`image`（不可变 SHA-256 镜像摘要）。首次发布后需将 GHCR 软件包设为公开；当前更新服务只支持公开镜像，不读取宿主机 Docker 登录凭据。仅推送 main 或手动构建镜像不会创建正式 Release。此功能的代码修改本身不会发布版本。
+维护者按正常发布流程推送与 VERSION 匹配的 `vX.Y.Z` 标签。GitHub Actions 校验版本、发布 amd64/arm64 业务镜像、updater 镜像与可选超分 Worker 镜像，然后创建正式 Release，附带 `media2api-release.json`，其字段为 `schema`、`version`、`image`（业务镜像的不可变 SHA-256 摘要）。超分 Worker 从 v0.1.3 开始提供，使用独立的 `super-resolution-X.Y.Z` 标签，不包含模型文件；页面一键更新仅管理业务容器，Worker 由 Compose 单独升级。首次发布后需将 GHCR 软件包设为公开；当前更新服务只支持公开镜像，不读取宿主机 Docker 登录凭据。仅推送 main 或手动构建镜像不会创建正式 Release。此功能的代码修改本身不会发布版本。
 
 ## 排障与恢复
 

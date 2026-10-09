@@ -24,6 +24,7 @@ from api.support import (
     sanitize_sub2api_servers,
 )
 from services.account_service import account_service
+from services.account_scheduling import MAX_PRIORITY, MAX_WEIGHT
 from services.cpa_service import cpa_config, cpa_import_service, list_remote_files
 from services.oauth_login_service import OAuthLoginError, oauth_login_service
 from services.sub2api_service import (
@@ -69,6 +70,8 @@ class AccountUpdateRequest(BaseModel):
     status: str | None = None
     quota: int | None = None
     proxy: str | None = None
+    priority: int | None = Field(default=None, strict=True, ge=0, le=MAX_PRIORITY)
+    weight: int | None = Field(default=None, strict=True, ge=1, le=MAX_WEIGHT)
 
 
 class CPAPoolCreateRequest(BaseModel):
@@ -336,7 +339,7 @@ def create_router() -> APIRouter:
         access_token = str(body.access_token or "").strip()
         if not access_token:
             raise HTTPException(status_code=400, detail={"error": "access_token is required"})
-        updates = {key: value for key, value in {"type": body.type, "status": body.status, "quota": body.quota, "proxy": body.proxy}.items() if value is not None}
+        updates = body.model_dump(exclude={"access_token"}, exclude_none=True)
         if not updates:
             raise HTTPException(status_code=400, detail={"error": "还没有检测到改动，请修改后再保存"})
         account = account_service.update_account(access_token, updates)

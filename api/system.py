@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict
 from api.support import require_admin, require_identity, resolve_image_base_url
 from services.backup_service import BackupError, backup_service
 from services.config import config
+from services.image_calibration import worker_ready
+from services.image_resolution import calibration_settings
 from services.image_service import (
     compress_images,
     delete_images,
@@ -93,6 +95,15 @@ def create_router(app_version: str) -> APIRouter:
             return {"config": config.update(body.model_dump(mode="python"))}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+
+    @router.post("/api/image-calibration/test")
+    async def test_image_calibration(body: dict[str, object], authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            settings = calibration_settings(body)
+        except ValueError as exc:
+            raise HTTPException(400, detail={"error": str(exc)}) from exc
+        return await run_in_threadpool(worker_ready, settings)
 
     @router.get("/api/images")
     async def get_images(request: Request, start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):

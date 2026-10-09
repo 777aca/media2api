@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from math import gcd
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 import tiktoken
 
@@ -16,6 +16,8 @@ from services.account_service import account_service
 from services.config import config
 from services.codex_text_service import CodexTextBackend
 from services.image_storage_service import image_storage_service
+from services.image_calibration import calibrate_image
+from services.image_resolution import validate_image_size
 from services.model_service import model_catalog_service
 from services.openai_backend_api import ImageContentPolicyError, ImagePollTimeoutError, OpenAIBackendAPI
 from utils.helper import (
@@ -289,6 +291,7 @@ def format_image_result(
     base_url: str | None = None,
     created: int | None = None,
     message: str = "",
+    *, requested_size: str | None = None, progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     data: list[dict[str, Any]] = []
     for item in items:
@@ -296,17 +299,18 @@ def format_image_result(
         if not b64_json:
             continue
         revised_prompt = str(item.get("revised_prompt") or prompt).strip() or prompt
+        settings = config.get_image_calibration_settings()
+        if settings["enabled"] and requested_size not in {None, "auto", ""} and progress_callback:
+            progress_callback("calibrating_image")
+        calibrated = calibrate_image(base64.b64decode(b64_json), requested_size, settings)
+        output = {
+            "url": save_image_bytes(calibrated.data, base_url),
+            "revised_prompt": revised_prompt,
+            **calibrated.metadata,
+        }
         if response_format == "b64_json":
-            data.append({
-                "b64_json": b64_json,
-                "url": save_image_bytes(base64.b64decode(b64_json), base_url),
-                "revised_prompt": revised_prompt,
-            })
-        else:
-            data.append({
-                "url": save_image_bytes(base64.b64decode(b64_json), base_url),
-                "revised_prompt": revised_prompt,
-            })
+            output["b64_json"] = base64.b64encode(calibrated.data).decode("ascii")
+        data.append(output)
     result: dict[str, Any] = {"created": created or int(time.time()), "data": data}
     if message and not data:
         result["message"] = message
@@ -328,6 +332,9 @@ class ConversationRequest:
     base_url: str | None = None
     message_as_error: bool = False
     progress_callback: Any = None  # Callable[[str], None] | None
+
+    def __post_init__(self) -> None:
+        self.size = validate_image_size(self.size)
 
 
 @dataclass
@@ -1045,6 +1052,7 @@ def stream_image_outputs(
             request.response_format,
             request.base_url,
             int(time.time()),
+            requested_size=request.size, progress_callback=request.progress_callback,
         )["data"]
         if data:
             yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1142,6 +1150,7 @@ def stream_image_outputs(
                         request.response_format,
                         request.base_url,
                         int(time.time()),
+                        requested_size=request.size, progress_callback=request.progress_callback,
                     )["data"]
                     if data:
                         yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1254,6 +1263,7 @@ def stream_image_outputs(
                     request.response_format,
                     request.base_url,
                     int(time.time()),
+                    requested_size=request.size, progress_callback=request.progress_callback,
                 )["data"]
                 if data:
                     yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1314,6 +1324,7 @@ def stream_codex_image_outputs(
         request.response_format,
         request.base_url,
         int(time.time()),
+        requested_size=request.size, progress_callback=request.progress_callback,
     )["data"]
     if data:
         yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)
@@ -1418,6 +1429,7 @@ def _generate_web_image_25(request: ConversationRequest, index: int, total: int)
             return outputs
         except Exception as original:
             exc = _web_image_25_error(original)
+            exc.pool_account_id = account_id
             conversation_id = conversation_id or str(getattr(original, "conversation_id", "") or "")
             settle(False)
             logger.warning({"event": "web_images_25_request_failed", "account_id": account_id,
@@ -1562,6 +1574,7 @@ def _generate_single_image(
             account_service.mark_image_result(token, True)
             return outputs
         except ImagePollTimeoutError as exc:
+            exc.pool_account_id = str(account.get("pool_account_id") or "")
             account_service.mark_image_result(token, False)
             if account_email:
                 setattr(exc, "account_email", account_email)
@@ -1605,6 +1618,7 @@ def _generate_single_image(
                 conversation_id=getattr(exc, "conversation_id", ""),
             ) from exc
         except ImageGenerationError as exc:
+            exc.pool_account_id = str(account.get("pool_account_id") or "")
             account_service.mark_image_result(token, False)
             if account_email and not getattr(exc, "account_email", ""):
                 exc.account_email = account_email

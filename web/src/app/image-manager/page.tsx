@@ -5,6 +5,7 @@ import { CalendarDays, ChevronLeft, ChevronRight, Copy, Download, ImageIcon, Loa
 import { toast } from "sonner";
 
 import { DateRangeFilter } from "@/components/date-range-filter";
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
 import { ImageLightbox } from "@/components/image-lightbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -74,6 +75,7 @@ function ImageManagerContent() {
   const [storageLoading, setStorageLoading] = useState(false);
   const [compressResult, setCompressResult] = useState<string>("");
   const [targetFreeMb, setTargetFreeMb] = useState(500);
+  const [cleanupTargetMb, setCleanupTargetMb] = useState<number | null>(null);
 
   const loadStorage = useCallback(async () => {
     try {
@@ -128,6 +130,22 @@ function ImageManagerContent() {
       toast.error(error instanceof Error ? error.message : "加载图片失败");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleCleanup = async () => {
+    if (cleanupTargetMb === null || isDeleting) return false;
+    setIsDeleting(true);
+    try {
+      const result = await deleteToTarget(cleanupTargetMb);
+      toast.success(`已删除 ${result.removed} 张图片，释放 ${result.freed_mb ?? 0}MB`);
+      await Promise.all([loadStorage(), loadImages()]);
+      return true;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "清理失败");
+      return false;
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -382,14 +400,11 @@ function ImageManagerContent() {
                 onClick={() => setDeleteMode("byDate")}>
                 🗑️ 按日期删除
               </Button>
-              <form onSubmit={async (e) => { e.preventDefault();
-                try {
-                  const r = await deleteToTarget(targetFreeMb);
-                  toast.success(`已删除 ${r.removed} 张图片，释放 ${r.freed_mb ?? 0}MB`);
-                  void loadStorage();
-                } catch { toast.error("清理失败"); }
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                if (!isDeleting) setCleanupTargetMb(targetFreeMb);
               }} className="flex items-center gap-1">
-                <Button size="sm" variant="outline" className="h-7 text-xs border-amber-200 text-amber-700" type="submit">
+                <Button size="sm" variant="outline" className="h-7 text-xs border-amber-200 text-amber-700" type="submit" disabled={isDeleting}>
                   🧹 清理至
                 </Button>
                 <Input className="h-7 w-14 text-xs text-center px-1" type="number" min={50} value={targetFreeMb}
@@ -405,6 +420,15 @@ function ImageManagerContent() {
           </div>
         )}
       </div>
+
+      <DeleteConfirmDialog
+        open={cleanupTargetMb !== null}
+        onOpenChange={(open) => { if (!open) setCleanupTargetMb(null); }}
+        title="清理图片空间"
+        description={`确认清理图片，使磁盘剩余空间达到 ${cleanupTargetMb ?? targetFreeMb} MB 吗？系统将从最旧的本地图片开始删除，删除后无法恢复。`}
+        onConfirm={handleCleanup}
+        confirmLabel="确认清理"
+      />
 
       {/* Delete by date dialog */}
       <Dialog open={deleteMode === "byDate"} onOpenChange={() => setDeleteMode(null)}>
@@ -703,7 +727,7 @@ function ImageManagerContent() {
             <DialogTitle>删除标签</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-stone-600">
-            确定要删除标签 <span className="font-semibold">"{tagDeleteTarget}"</span> 吗？将从所有图片中移除该标签。
+            确定要删除标签 <span className="font-semibold">「{tagDeleteTarget}」</span> 吗？将从所有图片中移除该标签。
           </p>
           <DialogFooter>
             <Button variant="outline" className="rounded-xl" onClick={() => setTagDeleteTarget(null)}>

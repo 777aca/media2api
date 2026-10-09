@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
 import { ModelCatalog } from "@/components/model-catalog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -58,6 +59,13 @@ import {
   type RefreshProgressResponse,
 } from "@/lib/api";
 import { useModelCatalog } from "@/hooks/use-model-catalog";
+import {
+  DEFAULT_ACCOUNT_PRIORITY,
+  DEFAULT_ACCOUNT_WEIGHT,
+  MAX_ACCOUNT_PRIORITY,
+  MAX_ACCOUNT_WEIGHT,
+  parseAccountScheduling,
+} from "@/lib/account-scheduling";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { cn } from "@/lib/utils";
 
@@ -179,11 +187,14 @@ function AccountsPageContent() {
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
   const [editProxy, setEditProxy] = useState("");
+  const [editPriority, setEditPriority] = useState(String(DEFAULT_ACCOUNT_PRIORITY));
+  const [editWeight, setEditWeight] = useState(String(DEFAULT_ACCOUNT_WEIGHT));
   const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingTokens, setRefreshingTokens] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteRequest, setDeleteRequest] = useState<{ tokens: string[]; title: string; description: string } | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isRelogining, setIsRelogining] = useState(false);
   const [progress, setProgress] = useState<{
@@ -300,10 +311,20 @@ function AccountsPageContent() {
     return items;
   }, [pageCount, safePage]);
 
+  const openDeleteConfirm = (tokens: string[], title: string, accountLabel?: string) => {
+    if (tokens.length === 0 || isDeleting) return;
+    setDeleteRequest({
+      tokens: [...tokens],
+      title,
+      description: `确认从号池中删除${accountLabel ? `账户「${accountLabel}」` : `这 ${tokens.length} 个账户`}吗？删除后无法撤销，需要重新导入才能使用。`,
+    });
+  };
+
   const handleDeleteTokens = async (tokens: string[]) => {
+    if (isDeleting) return false;
     if (tokens.length === 0) {
       toast.error("请先选择要删除的账户");
-      return;
+      return false;
     }
 
     setIsDeleting(true);
@@ -312,9 +333,11 @@ function AccountsPageContent() {
       applyAccountChanges(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
       toast.success(`删除 ${data.removed ?? 0} 个账户`);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "删除账户失败";
       toast.error(message);
+      return false;
     } finally {
       setIsDeleting(false);
     }
@@ -646,6 +669,8 @@ function AccountsPageContent() {
     setEditingAccount(account);
     setEditStatus(account.status);
     setEditProxy(account.proxy ?? "");
+    setEditPriority(String(account.priority ?? DEFAULT_ACCOUNT_PRIORITY));
+    setEditWeight(String(account.weight ?? DEFAULT_ACCOUNT_WEIGHT));
   };
 
   const handleTestAccountProxy = async () => {
@@ -668,15 +693,17 @@ function AccountsPageContent() {
   };
 
   const handleUpdateAccount = async () => {
-    if (!editingAccount) {
+    if (!editingAccount || isUpdating) {
       return;
     }
 
     setIsUpdating(true);
     try {
+      const scheduling = parseAccountScheduling(editPriority, editWeight);
       const data = await updateAccount(editingAccount.access_token, {
         status: editStatus,
         proxy: editProxy.trim(),
+        ...scheduling,
       });
       applyAccountChanges(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
@@ -770,18 +797,18 @@ function AccountsPageContent() {
         </div>
       )}
 
-      <Dialog open={Boolean(editingAccount)} onOpenChange={(open) => (!open ? setEditingAccount(null) : null)}>
+      <Dialog open={Boolean(editingAccount)} onOpenChange={(open) => { if (!open && !isUpdating) setEditingAccount(null); }}>
         <DialogContent showCloseButton={false} className="rounded-2xl p-6">
           <DialogHeader className="gap-2">
             <DialogTitle>编辑账户</DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              手动修改账号状态和专属代理。
+              修改账号状态、调度设置和专属代理。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium text-stone-700">状态</label>
-              <Select value={editStatus} onValueChange={(value) => setEditStatus(value as AccountStatus)}>
+              <Select value={editStatus} onValueChange={(value) => setEditStatus(value as AccountStatus)} disabled={isUpdating}>
                 <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
                   <SelectValue />
                 </SelectTrigger>
@@ -796,11 +823,46 @@ function AccountsPageContent() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label htmlFor="account-priority" className="text-sm font-medium text-stone-700">优先级</label>
+                <Input
+                  id="account-priority"
+                  type="number"
+                  min={0}
+                  max={MAX_ACCOUNT_PRIORITY}
+                  step={1}
+                  value={editPriority}
+                  onChange={(event) => setEditPriority(event.target.value)}
+                  disabled={isUpdating}
+                  aria-describedby="account-priority-help"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+                <p id="account-priority-help" className="text-xs leading-5 text-stone-500">0–{MAX_ACCOUNT_PRIORITY}，数值越大越先使用。</p>
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="account-weight" className="text-sm font-medium text-stone-700">权重</label>
+                <Input
+                  id="account-weight"
+                  type="number"
+                  min={1}
+                  max={MAX_ACCOUNT_WEIGHT}
+                  step={1}
+                  value={editWeight}
+                  onChange={(event) => setEditWeight(event.target.value)}
+                  disabled={isUpdating}
+                  aria-describedby="account-weight-help"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+                <p id="account-weight-help" className="text-xs leading-5 text-stone-500">1–{MAX_ACCOUNT_WEIGHT}，同优先级下按权重比例分配请求。</p>
+              </div>
+            </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-stone-700">账号代理</label>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Input
                   value={editProxy}
+                  disabled={isUpdating}
                   onChange={(event) => setEditProxy(event.target.value)}
                   placeholder="留空走全局代理，例如 http://127.0.0.1:7890"
                   className="h-11 rounded-xl border-stone-200 bg-white"
@@ -809,7 +871,7 @@ function AccountsPageContent() {
                   variant="outline"
                   className="h-11 rounded-xl border-stone-200 bg-white px-4 text-stone-700 sm:w-24"
                   onClick={() => void handleTestAccountProxy()}
-                  disabled={isTestingProxy}
+                  disabled={isTestingProxy || isUpdating}
                 >
                   {isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
                   测试
@@ -973,7 +1035,7 @@ function AccountsPageContent() {
                 <Button
                   variant="ghost"
                   className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
-                  onClick={() => void handleDeleteTokens(abnormalTokens)}
+                  onClick={() => openDeleteConfirm(abnormalTokens, "移除异常账号")}
                   disabled={abnormalTokens.length === 0 || isDeleting}
                 >
                   {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
@@ -982,7 +1044,7 @@ function AccountsPageContent() {
                 <Button
                   variant="ghost"
                   className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
-                  onClick={() => void handleDeleteTokens(selectedTokens)}
+                  onClick={() => openDeleteConfirm(selectedTokens, "删除所选账户")}
                   disabled={selectedTokens.length === 0 || isDeleting}
                 >
                   {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
@@ -997,8 +1059,8 @@ function AccountsPageContent() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1000px] text-left">
-                <thead className="border-b border-stone-100 text-[11px] text-stone-400 uppercase tracking-[0.18em]">
+              <table className="w-full min-w-[1360px] text-left">
+                <thead className="whitespace-nowrap border-b border-stone-100 text-[11px] text-stone-400 uppercase tracking-[0.18em]">
                   <tr>
                     <th className="w-12 px-4 py-3">
                       <Checkbox
@@ -1009,14 +1071,16 @@ function AccountsPageContent() {
                     <th className="w-56 px-4 py-3">token</th>
                     <th className="w-28 px-4 py-3">类型</th>
                     <th className="w-24 px-4 py-3">来源</th>
-                    <th className="w-24 px-4 py-3">状态</th>
+                    <th className="min-w-24 px-3 py-3">状态</th>
+                    <th className="w-20 px-3 py-3 text-center" title="数值越大越先使用">优先级</th>
+                    <th className="w-20 px-3 py-3 text-center" title="同优先级按权重比例分配请求">权重</th>
                     <th className="w-56 px-4 py-3">账号信息</th>
                     <th className="w-32 px-4 py-3">创建时间</th>
                     <th className="w-24 px-4 py-3">额度</th>
                     <th className="w-40 px-4 py-3">恢复时间</th>
-                    <th className="w-18 px-4 py-3">在途</th>
-                    <th className="w-18 px-4 py-3">成功</th>
-                    <th className="w-18 px-4 py-3">失败</th>
+                    <th className="w-16 px-3 py-3">在途</th>
+                    <th className="w-16 px-3 py-3">成功</th>
+                    <th className="w-16 px-3 py-3">失败</th>
                     <th className="w-24 px-4 py-3">操作</th>
                   </tr>
                 </thead>
@@ -1042,7 +1106,7 @@ function AccountsPageContent() {
                             }}
                           />
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="whitespace-nowrap px-4 py-3">
                           <div className="flex items-center gap-2">
                             <span className="font-medium tracking-tight text-stone-700">
                               {maskToken(account.access_token)}
@@ -1069,21 +1133,27 @@ function AccountsPageContent() {
                             {displayAccountSource(account)}
                           </Badge>
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="whitespace-nowrap px-3 py-3">
                           <Badge
                             variant={status.badge}
-                            className="inline-flex items-center gap-1 rounded-md px-2 py-1"
+                            className="inline-flex h-7 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-0 text-xs leading-none"
                           >
-                            <StatusIcon className="size-3.5" />
+                            <StatusIcon className="size-3.5 shrink-0" />
                             {account.status}
                           </Badge>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-center font-medium tabular-nums text-stone-700">
+                          {account.priority ?? DEFAULT_ACCOUNT_PRIORITY}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-center tabular-nums text-stone-500">
+                          {account.weight ?? DEFAULT_ACCOUNT_WEIGHT}
                         </td>
                         <td className="px-4 py-3">
                           <div className="text-xs leading-5 text-stone-500">{account.email ?? "—"}</div>
                         </td>
-                        <td className="px-4 py-3 text-xs leading-5 text-stone-500">
+                        <td className="whitespace-nowrap px-4 py-3 text-xs leading-5 text-stone-500">
                           {(() => {
-                            const raw = (account as any).created_at;
+                            const raw = account.created_at;
                             if (!raw) return "—";
                             try {
                               const d = new Date(raw + "Z");
@@ -1101,14 +1171,14 @@ function AccountsPageContent() {
                           {(() => {
                             const restore = formatRestoreAt(account.restore_at);
                             return (
-                              <div className="space-y-0.5">
+                              <div className="space-y-0.5 whitespace-nowrap">
                                 {restore.relative ? <div className="font-medium text-stone-700">{restore.relative}</div> : null}
                                 <div>{restore.absolute}</div>
                               </div>
                             );
                           })()}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3 tabular-nums">
                           {(() => {
                             const inflight = account.image_inflight ?? 0;
                             return (
@@ -1129,8 +1199,8 @@ function AccountsPageContent() {
                             );
                           })()}
                         </td>
-                        <td className="px-4 py-3 text-stone-500">{account.success}</td>
-                        <td className="px-4 py-3 text-stone-500">{account.fail}</td>
+                        <td className="px-3 py-3 tabular-nums text-stone-500">{account.success}</td>
+                        <td className="px-3 py-3 tabular-nums text-stone-500">{account.fail}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1 text-stone-400">
                             <button
@@ -1138,6 +1208,7 @@ function AccountsPageContent() {
                               className="rounded-lg p-2 transition hover:bg-stone-100 hover:text-stone-700"
                               onClick={() => openEditDialog(account)}
                               disabled={isUpdating}
+                              aria-label="编辑账户"
                             >
                               <Pencil className="size-4" />
                             </button>
@@ -1152,8 +1223,9 @@ function AccountsPageContent() {
                             <button
                               type="button"
                               className="rounded-lg p-2 transition hover:bg-rose-50 hover:text-rose-500"
-                              onClick={() => void handleDeleteTokens([account.access_token])}
+                              onClick={() => openDeleteConfirm([account.access_token], "删除账户", account.email || "所选账户")}
                               disabled={isDeleting}
+                              aria-label="删除账户"
                             >
                               <Trash2 className="size-4" />
                             </button>
@@ -1250,6 +1322,13 @@ function AccountsPageContent() {
           </CardContent>
         </Card>
       </section>
+      <DeleteConfirmDialog
+        open={deleteRequest !== null}
+        onOpenChange={(open) => { if (!open) setDeleteRequest(null); }}
+        title={deleteRequest?.title || "删除账户"}
+        description={deleteRequest?.description}
+        onConfirm={() => handleDeleteTokens(deleteRequest?.tokens || [])}
+      />
     </>
   );
 }

@@ -2,6 +2,8 @@
 
 import localforage from "localforage";
 
+import { parseImageProcessing, type ImageProcessingMetadata } from "@/lib/image-resolution";
+
 import type { ImageModel } from "@/lib/api";
 
 export type ImageConversationMode = "generate" | "edit";
@@ -12,7 +14,7 @@ export type StoredReferenceImage = {
   dataUrl: string;
 };
 
-export type StoredImage = {
+export type StoredImage = ImageProcessingMetadata & {
   id: string;
   taskId?: string;
   status?: "loading" | "success" | "error";
@@ -71,8 +73,14 @@ const IMAGE_CONVERSATIONS_KEY = "items";
 let imageConversationWriteQueue: Promise<void> = Promise.resolve();
 
 function normalizeStoredImage(image: StoredImage): StoredImage {
+  const metadata = parseImageProcessing(image);
   const normalized = {
     ...image,
+    requested_size: metadata.requested_size,
+    source_size: metadata.source_size,
+    actual_size: metadata.actual_size,
+    processing: metadata.processing,
+    processing_status: metadata.processing_status,
     taskId: typeof image.taskId === "string" && image.taskId ? image.taskId : undefined,
     taskStatus: image.taskStatus === "queued" || image.taskStatus === "running" ? image.taskStatus : undefined,
     url: typeof image.url === "string" && image.url ? image.url : undefined,

@@ -204,8 +204,9 @@ def _image_error_response(exc: Exception) -> JSONResponse:
 
 def _protocol_error_response(exc: Exception, status_code: int, sse: str) -> JSONResponse:
     from services.codex_text_service import CodexTextError
+    from services.image_resolution import ImageSizeError
 
-    if isinstance(exc, CodexTextError):
+    if isinstance(exc, (CodexTextError, ImageSizeError)):
         status_code = exc.status_code
         if sse != "anthropic":
             return JSONResponse(status_code=status_code, content=exc.to_openai_error())

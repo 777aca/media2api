@@ -47,6 +47,8 @@ import {
   type StoredReferenceImage,
 } from "@/store/image-conversations";
 
+import { IMAGE_SIZE_PRESETS, imageSizeError, parseImageProcessing } from "@/lib/image-resolution";
+
 const ACTIVE_CONVERSATION_STORAGE_KEY = "media2api:image_active_conversation_id";
 const IMAGE_RATIO_STORAGE_KEY = "media2api:image_last_ratio";
 const IMAGE_TIER_STORAGE_KEY = "media2api:image_last_tier";
@@ -224,6 +226,7 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
       b64_json: first.b64_json,
       url: first.url,
       revised_prompt: first.revised_prompt,
+      ...parseImageProcessing(first),
       error: undefined,
       durationMs: task.duration_ms,
     };
@@ -614,8 +617,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_COUNT_STORAGE_KEY) : null;
       setImageRatio(storedRatio || "1:1");
       setImageTier(storedTier || "1k");
-      setImageWidth("1024");
-      setImageHeight("1024");
+      const preset = IMAGE_SIZE_PRESETS.find((item) => item.ratio === (storedRatio || "1:1") && item.tier === (storedTier || "1k"));
+      setImageWidth(preset?.width || window.localStorage.getItem("media2api:image_last_width") || "1024");
+      setImageHeight(preset?.height || window.localStorage.getItem("media2api:image_last_height") || "1024");
       setImageQuality(storedQuality || "auto");
       setImageCount(storedCount ? clampImageCount(storedCount) : "1");
 
@@ -857,9 +861,11 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
     window.localStorage.setItem(IMAGE_RATIO_STORAGE_KEY, imageRatio);
     window.localStorage.setItem(IMAGE_TIER_STORAGE_KEY, imageTier);
+    window.localStorage.setItem("media2api:image_last_width", imageWidth);
+    window.localStorage.setItem("media2api:image_last_height", imageHeight);
     window.localStorage.setItem(IMAGE_QUALITY_STORAGE_KEY, imageQuality);
     window.localStorage.setItem(IMAGE_MODEL_STORAGE_KEY, imageModel);
-  }, [imageRatio, imageTier, imageQuality, imageModel]);
+  }, [imageRatio, imageTier, imageWidth, imageHeight, imageQuality, imageModel]);
 
   useEffect(() => {
     if (typeof window !== "undefined" && parsedCount > 0) {
@@ -1559,7 +1565,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     const now = new Date().toISOString();
     const conversationId = targetConversation?.id ?? createId();
     const turnId = createId();
-    const imageSize = `${imageWidth || 1024}x${imageHeight || 1024}`;
+    const imageSize = imageRatio === "auto" ? "auto" : `${imageWidth}x${imageHeight}`;
+    const sizeError = imageSizeError(imageSize);
+    if (sizeError) { toast.error(sizeError); return; }
     const draftTurn: ImageTurn = {
       id: turnId,
       prompt,

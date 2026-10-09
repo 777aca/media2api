@@ -14,6 +14,7 @@ import type { ImageStorageMode } from "@/lib/api";
 import { testProxy, type ProxyTestResult } from "@/lib/api";
 
 import { useSettingsStore } from "../store";
+import { ImageCalibrationSettingsCard } from "./image-calibration-settings";
 
 export function ConfigCard() {
   const [isTestingProxy, setIsTestingProxy] = useState(false);
@@ -85,6 +86,7 @@ export function ConfigCard() {
   return (
     <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
       <CardContent className="space-y-4 p-6">
+        <ImageCalibrationSettingsCard />
         <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-600">
           管理员登录密钥继续从部署配置读取，不再在此页面展示；如需分发给其他人，请在下方创建普通用户密钥。
         </div>
@@ -260,7 +262,7 @@ export function ConfigCard() {
               placeholder="360"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">单位秒，超时后点击"继续等待"额外等待的时间。</p>
+            <p className="text-xs text-stone-500">单位秒，超时后点击“继续等待”额外等待的时间。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">图片二次确认等待时间</label>

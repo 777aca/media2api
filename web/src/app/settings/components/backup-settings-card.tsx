@@ -4,6 +4,7 @@ import { CloudUpload, Download, Eye, LoaderCircle, Play, RefreshCcw, Shield, Tra
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,7 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import webConfig from "@/constants/common-env";
-import { fetchBackupDetail, getBackupDownloadUrl, type BackupDetail, type BackupInclude } from "@/lib/api";
+import { fetchBackupDetail, getBackupDownloadUrl, type BackupDetail, type BackupInclude, type BackupItem } from "@/lib/api";
 import { getStoredAuthKey } from "@/store/auth";
 import { useSettingsStore } from "../store";
 
@@ -75,6 +76,7 @@ const includeLabels: Array<{ key: keyof BackupInclude; label: string }> = [
 ];
 
 export function BackupSettingsCard() {
+  const [deleteTarget, setDeleteTarget] = useState<BackupItem | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState<BackupDetail | null>(null);
@@ -354,7 +356,7 @@ export function BackupSettingsCard() {
                         type="button"
                         variant="outline"
                         className="h-9 rounded-xl border-rose-200 bg-white px-4 text-rose-700"
-                        onClick={() => void removeBackup(item.key)}
+                        onClick={() => setDeleteTarget(item)}
                         disabled={isDeleting}
                       >
                         {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
@@ -369,6 +371,14 @@ export function BackupSettingsCard() {
           </div>
         </CardContent>
       </Card>
+
+      <DeleteConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        title="删除远端备份"
+        description={`确认删除备份「${deleteTarget?.name || deleteTarget?.key || ""}」吗？远端备份文件将被永久删除，无法恢复。`}
+        onConfirm={() => deleteTarget ? removeBackup(deleteTarget.key) : Promise.resolve(false)}
+      />
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden rounded-2xl border-white/80 bg-white">

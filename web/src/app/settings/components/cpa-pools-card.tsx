@@ -1,14 +1,18 @@
 "use client";
 
 import { Import, LoaderCircle, Pencil, Plus, ServerCog, Trash2 } from "lucide-react";
+import { useState } from "react";
 
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import type { CPAPool } from "@/lib/api";
 
 import { useSettingsStore } from "../store";
 
 export function CPAPoolsCard() {
+  const [deleteTarget, setDeleteTarget] = useState<CPAPool | null>(null);
   const pools = useSettingsStore((state) => state.pools);
   const isLoadingPools = useSettingsStore((state) => state.isLoadingPools);
   const deletingId = useSettingsStore((state) => state.deletingId);
@@ -81,7 +85,7 @@ export function CPAPoolsCard() {
                       <button
                         type="button"
                         className="rounded-lg p-2 text-stone-400 transition hover:bg-rose-50 hover:text-rose-500"
-                        onClick={() => void deletePool(pool)}
+                        onClick={() => setDeleteTarget(pool)}
                         disabled={isBusy}
                         title="删除"
                       >
@@ -164,6 +168,13 @@ export function CPAPoolsCard() {
           </ul>
         </div>
       </CardContent>
+      <DeleteConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        title="删除 CPA 连接"
+        description={`确认删除连接「${deleteTarget?.name || deleteTarget?.base_url || ""}」吗？删除后需要重新配置才能同步账号。`}
+        onConfirm={() => deleteTarget ? deletePool(deleteTarget) : Promise.resolve(false)}
+      />
     </Card>
   );
 }

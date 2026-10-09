@@ -12,6 +12,14 @@ from threading import Condition, Lock, Thread
 from typing import Any
 from urllib.parse import urlencode
 
+from services.account_scheduling import (
+    AccountScheduler,
+    DEFAULT_PRIORITY,
+    DEFAULT_WEIGHT,
+    MAX_PRIORITY,
+    MAX_WEIGHT,
+    normalize_scheduling_value,
+)
 from services.config import config
 from services.log_service import (
     LOG_TYPE_ACCOUNT,
@@ -51,7 +59,7 @@ class AccountService:
         self._lock = Lock()
         self._token_refresh_lock = Lock()
         self._image_slot_condition = Condition(self._lock)
-        self._index = 0
+        self._scheduler = AccountScheduler()
         self._accounts = self._load_accounts()
         self._image_inflight: dict[str, int] = {}
         self._token_aliases: dict[str, str] = {}
@@ -133,6 +141,10 @@ class AccountService:
                 normalized["pool_account_id"] = str(uuid.uuid4())
             seen_ids.add(normalized["pool_account_id"])
             migrated = migrated or normalized["pool_account_id"] != item.get("pool_account_id")
+            migrated = migrated or any(
+                type(item.get(key)) is not int or normalized[key] != item.get(key)
+                for key in ("priority", "weight")
+            )
             accounts[token] = normalized
         if migrated:
             self.storage.save_accounts(list(accounts.values()))
@@ -238,6 +250,12 @@ class AccountService:
         normalized["email"] = normalized.get("email") or None
         normalized["user_id"] = normalized.get("user_id") or None
         normalized["proxy"] = str(normalized.get("proxy") or "").strip()
+        normalized["priority"] = normalize_scheduling_value(
+            item.get("priority"), minimum=0, maximum=MAX_PRIORITY, default=DEFAULT_PRIORITY,
+        )
+        normalized["weight"] = normalize_scheduling_value(
+            item.get("weight"), minimum=1, maximum=MAX_WEIGHT, default=DEFAULT_WEIGHT,
+        )
         source_type = normalized.get("source_type")
         if not source_type and str(normalized.get("export_type") or "").strip().lower() == "codex":
             source_type = "codex"
@@ -963,8 +981,8 @@ class AccountService:
                     )
                 tokens = self._list_available_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)
                 if tokens:
-                    access_token = tokens[self._index % len(tokens)]
-                    self._index += 1
+                    selected = self._scheduler.select([self._accounts[token] for token in tokens], group="image")
+                    access_token = selected["access_token"]
                     self._image_inflight[access_token] = int(self._image_inflight.get(access_token, 0)) + 1
                     return access_token
                 self._image_slot_condition.wait(timeout=1.0)
@@ -1067,8 +1085,7 @@ class AccountService:
                     raise ModelUnavailableError(
                         f"model {requested_model!r} is not available to any active account on {channel} channel"
                     )
-                selected = candidates[self._index % len(candidates)]
-                self._index += 1
+                selected = self._scheduler.select(candidates, group=f"text:{channel}")
                 account_id = selected["pool_account_id"]
                 access_token = selected["access_token"]
                 attempted_ids.add(account_id)
@@ -1232,6 +1249,8 @@ class AccountService:
                     }
                 )
                 if account is not None:
+                    if any(account[key] != current.get(key) for key in ("priority", "weight")):
+                        self._scheduler.forget(account["pool_account_id"])
                     self._accounts[access_token] = account
             self._save_accounts()
             items = [dict(item) for item in self._accounts.values()]
@@ -1245,8 +1264,12 @@ class AccountService:
             return {"removed": 0, "items": self.list_accounts()}
         with self._lock:
             target_set = {self._resolve_access_token_locked(token) for token in target_set if token}
-            removed = sum(self._accounts.pop(token, None) is not None for token in target_set)
+            removed = 0
             for token in target_set:
+                account = self._accounts.pop(token, None)
+                if account is not None:
+                    removed += 1
+                    self._scheduler.forget(account["pool_account_id"])
                 self._image_inflight.pop(token, None)
             self._token_aliases = {
                 old: new
@@ -1254,10 +1277,6 @@ class AccountService:
                 if old not in target_set and new not in target_set
             }
             if removed:
-                if self._accounts:
-                    self._index %= len(self._accounts)
-                else:
-                    self._index = 0
                 self._save_accounts()
                 log_service.add(LOG_TYPE_ACCOUNT, f"删除 {removed} 个账号", {"removed": removed})
             items = [dict(item) for item in self._accounts.values()]
@@ -1277,6 +1296,8 @@ class AccountService:
             })
             if account is None:
                 return None
+            if any(account[key] != current[key] for key in ("priority", "weight")):
+                self._scheduler.forget(account["pool_account_id"])
             if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
                 self._accounts.pop(access_token, None)
                 self._save_accounts()

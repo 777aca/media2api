@@ -241,6 +241,7 @@ def image_output_items(prompt: str, data: list[dict[str, Any]], item_id: str | N
                 "type": "image_generation_call",
                 "status": "completed",
                 "result": b64_json,
+                **{key: item[key] for key in ("requested_size", "source_size", "actual_size", "processing", "processing_status") if key in item},
                 "revised_prompt": str(item.get("revised_prompt") or prompt).strip() or prompt,
             })
     return output

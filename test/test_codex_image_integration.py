@@ -85,6 +85,34 @@ class WebImage25Fixture:
 
 
 class WebImage25PoolIntegrationTests(WebImage25Fixture, unittest.TestCase):
+    def test_timeout_carries_private_original_account_id_for_recovery(self) -> None:
+        from services.openai_backend_api import ImagePollTimeoutError
+        self.generate.side_effect = ImagePollTimeoutError("image timed out", "test-conversation")
+        with self.assertRaises(conversation.ImageGenerationError) as caught:
+            list(conversation.stream_image_outputs_with_pool(self.request()))
+        self.assertEqual(caught.exception.pool_account_id, self.accounts.get_account(self.token)["pool_account_id"])
+        self.assertEqual(caught.exception.conversation_id, "test-conversation")
+        self.assertNotIn("pool_account_id", json.dumps(caught.exception.to_openai_error()))
+
+    def test_calibration_failure_keeps_success_and_does_not_regenerate_or_double_charge(self) -> None:
+        def generate(_backend, request, index=1, total=1):
+            data = conversation.format_image_result(
+                [{"b64_json": self.image_b64}], request.prompt, "b64_json", requested_size=request.size,
+            )["data"]
+            return [conversation.ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)]
+        self.generate.side_effect = generate
+        request = self.request()
+        request.size = "2048x2048"
+        with mock.patch.object(config, "get_image_calibration_settings", return_value={"enabled": True}), \
+                mock.patch("services.image_calibration.super_resolve", side_effect=TimeoutError()), \
+                mock.patch.object(conversation, "save_image_bytes", return_value="http://test/saved"):
+            outputs = list(conversation.stream_image_outputs_with_pool(request))
+        self.assertEqual(outputs[0].data[0]["processing_status"], "fallback")
+        self.assertEqual(self.accounts.get_account(self.token)["quota"], 7)
+        self.assertEqual(self.accounts.get_account(self.token)["success"], 1)
+        self.assertEqual(self.accounts.list_accounts()[0]["image_inflight"], 0)
+        self.generate.assert_called_once()
+
     def test_success_uses_explicit_model_and_consumes_one_quota_and_slot(self) -> None:
         for model in WEB_MODELS:
             with self.subTest(model=model), mock.patch.object(self.accounts, "release_image_slot", wraps=self.accounts.release_image_slot) as release:

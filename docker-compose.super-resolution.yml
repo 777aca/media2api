@@ -1,0 +1,21 @@
+# Start with: docker compose -f docker-compose.yml -f docker-compose.super-resolution.yml up -d --build
+services:
+  app:
+    environment:
+      SUPER_RESOLUTION_WORKER_SECRET: ${SUPER_RESOLUTION_WORKER_SECRET:?Set a shared worker secret}
+  super-resolution:
+    image: ghcr.io/777aca/media2api:super-resolution
+    build:
+      context: .
+      target: super-resolution
+    restart: unless-stopped
+    volumes:
+      - ./data/models:/app/data/models:ro
+      - ./logs:/app/logs
+    environment:
+      SUPER_RESOLUTION_BIND: 0.0.0.0
+      SUPER_RESOLUTION_WORKER_SECRET: ${SUPER_RESOLUTION_WORKER_SECRET:?Set a shared worker secret}
+      REALESR_MODEL_PATH: /app/data/models/realesr-general-x4v3.onnx
+      SUPER_RESOLUTION_THREADS: "2"
+    expose:
+      - "3310"

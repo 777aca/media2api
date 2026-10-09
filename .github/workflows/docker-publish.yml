@@ -86,7 +86,24 @@ jobs:
           cache-from: type=gha,scope=updater
           cache-to: type=gha,scope=updater,mode=max
 
-      - name: Publish release after both images are ready
+      - name: Build and push super-resolution worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: super-resolution
+          build-args: APP_VERSION=${{ steps.version.outputs.version }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:super-resolution-${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:super-resolution
+          cache-from: |
+            type=gha
+            type=gha,scope=super-resolution
+          cache-to: type=gha,scope=super-resolution,mode=max
+
+      - name: Publish release after all images are ready
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}

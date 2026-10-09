@@ -9,6 +9,7 @@ from pathlib import Path
 import time
 
 from services.storage.base import StorageBackend
+from services.image_resolution import calibration_settings
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
@@ -600,6 +601,7 @@ class ConfigStore:
         data["default_thinking_effort"] = self.default_thinking_effort
         data["backup"] = self.get_backup_settings()
         data["image_storage"] = self.get_image_storage_settings()
+        data["image_calibration"] = self.get_image_calibration_settings()
         data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
         data["proxy_runtime"] = self.get_public_proxy_runtime_settings()
         data["third_party_apps"] = self.get_third_party_apps_settings()
@@ -642,6 +644,8 @@ class ConfigStore:
                     "image_retention_days": hours // 24 if hours % 24 == 0 else hours / 24}
         next_data = dict(self.data)
         next_data.update(dict(data or {}))
+        if "image_calibration" in next_data:
+            next_data["image_calibration"] = calibration_settings(next_data["image_calibration"])
         if "backup" in next_data:
             next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
         if "image_storage" in next_data:
@@ -674,6 +678,9 @@ class ConfigStore:
 
     def get_backup_settings(self) -> dict[str, object]:
         return _normalize_backup_settings(self.data.get("backup"))
+
+    def get_image_calibration_settings(self) -> dict[str, object]:
+        return calibration_settings(self.data.get("image_calibration"))
 
     def get_image_storage_settings(self) -> dict[str, object]:
         return _normalize_image_storage_settings(self.data.get("image_storage"))

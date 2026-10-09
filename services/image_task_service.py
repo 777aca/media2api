@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from services.image_resolution import validate_image_size
+from services.account_service import account_service
 from services.config import DATA_DIR, config
 from services.content_filter import request_text
 from services.log_service import LOG_TYPE_CALL, log_service
@@ -204,6 +206,7 @@ class ImageTaskService:
         payload: dict[str, Any],
         request_params: dict[str, object] | None = None,
     ) -> dict[str, Any]:
+        payload = {**payload, "size": validate_image_size(payload.get("size"))}
         task_id = _clean(client_task_id)
         if not task_id:
             raise ValueError("client_task_id is required")
@@ -304,7 +307,7 @@ class ImageTaskService:
             duration_ms = int((time.time() - started) * 1000)
             self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[],
                               duration_ms=duration_ms,
-                              **({"conversation_id": conversation_id} if conversation_id else {}))
+                              **({"conversation_id": conversation_id, "pool_account_id": _clean(getattr(exc, "pool_account_id", ""))} if conversation_id else {}))
             self._log_call(
                 identity,
                 mode,
@@ -407,6 +410,9 @@ class ImageTaskService:
                 "started_ts": item.get("started_ts"),
                 "duration_ms": item.get("duration_ms"),
             }
+            for field in ("conversation_id", "pool_account_id"):
+                if _clean(item.get(field)):
+                    task[field] = _clean(item[field])
             data = item.get("data")
             if isinstance(item.get("request_params"), dict):
                 task["request_params"] = sanitize_request_parameters(item["request_params"])
@@ -511,7 +517,14 @@ class ImageTaskService:
             from services.openai_backend_api import OpenAIBackendAPI
             from services.protocol.conversation import format_image_result
 
-            backend = OpenAIBackendAPI(proxy_url=config.proxy_url or None)
+            with self._lock:
+                pool_id = _clean(self._tasks.get(key, {}).get("pool_account_id"))
+            if not pool_id:
+                raise RuntimeError("此历史任务缺少原账号标识，无法继续读取会话")
+            account = next((item for item in account_service.list_accounts() if item.get("pool_account_id") == pool_id), None)
+            if not account or not account.get("access_token"):
+                raise RuntimeError("原生成账号已不可用，无法继续读取会话")
+            backend = OpenAIBackendAPI(access_token=account["access_token"])
             file_ids, sediment_ids = backend._poll_image_results(
                 conversation_id,
                 extra_timeout_secs,
@@ -542,6 +555,7 @@ class ImageTaskService:
                 "b64_json",
                 "",
                 int(time.time()),
+                requested_size=size,
             )["data"]
             self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="", duration_ms=int((time.time() - started) * 1000))
             self._log_call(

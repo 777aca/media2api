@@ -1,3 +1,4 @@
+import type { ImageProcessingMetadata } from "./image-resolution";
 import { parseModelCatalogResponse, type Model } from "@/lib/model-catalog";
 
 export { parseModelCatalogResponse } from "@/lib/model-catalog";
@@ -41,6 +42,9 @@ export type Account = {
   fail: number;
   /** 当前图片在途数(正在生成、尚未结束的图片数)。号池空闲时持续 > 0 表示并发槽位泄漏。 */
   image_inflight?: number;
+  priority?: number;
+  weight?: number;
+  created_at?: string | null;
   last_used_at?: string | null;
   proxy?: string | null;
 };
@@ -150,7 +154,10 @@ export type ThirdPartyAppsSettings = {
   };
 };
 
+export type ImageCalibrationSettings = { enabled: boolean; worker_url: string; timeout_secs: number };
+
 export type SettingsConfig = {
+  image_calibration?: ImageCalibrationSettings;
   proxy: string;
   base_url?: string;
   global_system_prompt?: string;
@@ -277,7 +284,7 @@ export type SystemLog = {
 
 export type ImageResponse = {
   created: number;
-  data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
+  data: Array<ImageProcessingMetadata & { b64_json?: string; url?: string; revised_prompt?: string }>;
 };
 
 export type ImageTask = {
@@ -290,7 +297,7 @@ export type ImageTask = {
   created_at: string;
   updated_at: string;
   conversation_id?: string;
-  data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
+  data?: Array<ImageProcessingMetadata & { b64_json?: string; url?: string; revised_prompt?: string }>;
   error?: string;
   progress?: string;
   elapsed_secs?: number;
@@ -414,6 +421,8 @@ export async function updateAccount(
     status?: AccountStatus;
     quota?: number;
     proxy?: string;
+    priority?: number;
+    weight?: number;
   },
 ) {
   return httpRequest<AccountUpdateResponse>("/api/accounts/update", {
@@ -945,4 +954,10 @@ export async function testProxyClearance(targetUrl?: string) {
     method: "POST",
     body: { target_url: targetUrl ?? "https://chatgpt.com" },
   });
+}
+
+export async function testImageCalibration(settings: ImageCalibrationSettings) {
+  const value: unknown = await httpRequest("/api/image-calibration/test", { method: "POST", body: settings });
+  if (typeof value !== "object" || value === null || !("ok" in value) || typeof value.ok !== "boolean" || !("message" in value) || typeof value.message !== "string") throw new Error("超分检查返回格式错误");
+  return { ok: value.ok, message: value.message };
 }

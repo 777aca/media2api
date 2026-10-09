@@ -1,4 +1,9 @@
 {
+  "image_calibration": {
+    "enabled": false,
+    "worker_url": "http://127.0.0.1:3310",
+    "timeout_secs": 300
+  },
   "auth-key": "media2api",
   "refresh_account_interval_minute": 5,
   "image_retention_hours": 360,

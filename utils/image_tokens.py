@@ -276,8 +276,11 @@ def count_image_output_items_tokens(
     for item in items:
         image_size = None
         if isinstance(item, dict):
+            source_size = item.get("source_size")
+            if isinstance(source_size, str) and re.fullmatch(r"[1-9][0-9]*x[1-9][0-9]*", source_size):
+                image_size = tuple(map(int, source_size.split("x")))
             b64_json = str(item.get("b64_json") or "").strip()
-            if b64_json:
+            if b64_json and image_size is None:
                 try:
                     image_size = image_size_from_bytes(base64.b64decode(b64_json))
                 except Exception:

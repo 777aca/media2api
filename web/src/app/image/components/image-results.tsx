@@ -5,6 +5,7 @@ import { Clock3, Download, EyeOff, LoaderCircle, RotateCcw, Sparkles, Trash2 } f
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { imageProcessingLabel } from "@/lib/image-resolution";
 import type { ImageConversation, ImageTurnStatus, StoredImage, StoredReferenceImage } from "@/store/image-conversations";
 
 export type ImageLightboxItem = {
@@ -97,8 +98,8 @@ export function ImageResults({
   onDismissErrors,
   formatConversationTime,
 }: ImageResultsProps) {
-  const imageDimensionsRef = useRef<Record<string, string>>({});
-  const [currentTime, setCurrentTime] = useState(Date.now());
+  const [imageDimensions, setImageDimensions] = useState<Record<string, string>>({});
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
   
   // 仅在存在 loading 图片时启动定时器，避免空闲时无谓重渲染
   const hasLoadingImages = selectedConversation?.turns.some(
@@ -114,10 +115,7 @@ export function ImageResults({
 
   const updateImageDimensions = (id: string, width: number, height: number) => {
     const dimensions = formatImageDimensions(width, height);
-    // 使用 ref 存储，不触发 React 重渲染，消除级联重渲染
-    if (imageDimensionsRef.current[id] !== dimensions) {
-      imageDimensionsRef.current[id] = dimensions;
-    }
+    setImageDimensions((previous) => previous[id] === dimensions ? previous : { ...previous, [id]: dimensions });
   };
 
   if (!selectedConversation) {
@@ -160,7 +158,7 @@ export function ImageResults({
                   id: image.id,
                   src,
                   sizeLabel: image.b64_json ? formatBase64ImageSize(image.b64_json) : undefined,
-                  dimensions: imageDimensionsRef.current[image.id],
+                  dimensions: [image.actual_size || imageDimensions[image.id], imageProcessingLabel(image)].filter(Boolean).join(" · "),
                 },
               ]
             : [];
@@ -251,8 +249,9 @@ export function ImageResults({
                       if (image.status === "success" && imageSrc) {
                         const currentIndex = successfulTurnImages.findIndex((item) => item.id === image.id);
                         const sizeLabel = image.b64_json ? formatBase64ImageSize(image.b64_json) : "";
-                        const dimensions = imageDimensionsRef.current[image.id];
+                        const dimensions = image.actual_size || imageDimensions[image.id];
                         const imageMeta = [sizeLabel, dimensions].filter(Boolean).join(" · ");
+                        const processingLabel = imageProcessingLabel(image);
 
                         return (
                           <div
@@ -277,6 +276,9 @@ export function ImageResults({
                                 <span>结果 {index + 1}</span>
                                 {image.durationMs != null ? <span className="text-stone-400 sm:ml-2">{formatDuration(image.durationMs)}</span> : null}
                                 {imageMeta ? <span className="block text-stone-400">{imageMeta}</span> : null}
+                                {processingLabel && <span className="block text-stone-400" title={`请求 ${image.requested_size || "自动"} · 上游 ${image.source_size || "未知"}`}>
+                                  {processingLabel.split("，").map((label) => <span key={label} className="block whitespace-nowrap">{label}</span>)}
+                                </span>}
                               </div>
                               <div className="flex items-center gap-1.5">
                                 <Button
@@ -464,6 +466,7 @@ const PROGRESS_LABELS: Record<string, string> = {
   starting_generation: "启动生成",
   generating: "生成中",
   receiving_image: "接收图片中",
+  calibrating_image: "校准图片尺寸",
 };
 
 function getProgressLabel(progress?: string) {

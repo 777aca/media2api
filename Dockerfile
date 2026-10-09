@@ -26,7 +26,7 @@ FROM --platform=$TARGETPLATFORM python:3.13-slim AS app
 
 ARG TARGETPLATFORM
 ARG TARGETARCH
-ARG APP_VERSION=0.1.2
+ARG APP_VERSION=0.1.3
 
 LABEL org.opencontainers.image.source="https://github.com/777aca/media2api" \
       org.opencontainers.image.version="${APP_VERSION}" \
@@ -66,3 +66,11 @@ COPY --from=web-build /app/web/out ./web_dist
 EXPOSE 80
 
 CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80", "--access-log"]
+
+
+FROM app AS super-resolution
+RUN uv sync --frozen --no-dev --no-install-project --extra super-resolution
+EXPOSE 3310
+CMD ["uv", "run", "--no-sync", "python", "scripts/run_super_resolution.py"]
+
+FROM app AS default

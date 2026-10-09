@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import type { ImageModel } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { IMAGE_SIZE_PRESETS, imageSizeError, isExperimentalSize } from "@/lib/image-resolution";
 
 type ImageComposerProps = {
   prompt: string;
@@ -63,21 +64,9 @@ const qualityOptions = [
   { value: "medium", label: "中" },
   { value: "high", label: "高" },
 ];
-const aspectOptions = [
-  { ratio: "1:1", tier: "1k", width: "1024", height: "1024", label: "1:1", icon: Square },
-  { ratio: "2:3", tier: "1k", width: "1024", height: "1536", label: "2:3", icon: RectangleVertical },
-  { ratio: "3:2", tier: "1k", width: "1536", height: "1024", label: "3:2", icon: RectangleHorizontal },
-  { ratio: "3:4", tier: "1k", width: "1024", height: "1365", label: "3:4", icon: RectangleVertical },
-  { ratio: "4:3", tier: "1k", width: "1365", height: "1024", label: "4:3", icon: RectangleHorizontal },
-  { ratio: "9:16", tier: "1k", width: "1088", height: "1920", label: "9:16", icon: RectangleVertical },
-  { ratio: "16:9", tier: "1k", width: "1920", height: "1088", label: "16:9", icon: RectangleHorizontal },
-  { ratio: "1:1", tier: "2k", width: "2048", height: "2048", label: "1:1(2k)", icon: Square },
-  { ratio: "16:9", tier: "2k", width: "2560", height: "1440", label: "16:9(2k)", icon: RectangleHorizontal },
-  { ratio: "9:16", tier: "2k", width: "1440", height: "2560", label: "9:16(2k)", icon: RectangleVertical },
-  { ratio: "16:9", tier: "4k", width: "3840", height: "2160", label: "16:9(4k)", icon: RectangleHorizontal },
-  { ratio: "9:16", tier: "4k", width: "2160", height: "3840", label: "9:16(4k)", icon: RectangleVertical },
-  { ratio: "auto", tier: "auto", width: "1024", height: "1024", label: "auto", icon: null },
-];
+const aspectOptions = IMAGE_SIZE_PRESETS.map((preset) => ({ ...preset,
+  icon: preset.ratio === "auto" ? null : preset.width === preset.height ? Square : Number(preset.width) > Number(preset.height) ? RectangleHorizontal : RectangleVertical,
+}));
 const countOptions = Array.from({ length: 10 }, (_, index) => String(index + 1));
 
 export function ImageComposer({
@@ -123,11 +112,12 @@ export function ImageComposer({
     () => imageModels.map((model) => ({ value: model, label: model })),
     [imageModels],
   );
+  const sizeError = imageRatio === "auto" ? null : imageSizeError(`${imageWidth}x${imageHeight}`);
+  const experimental = imageRatio !== "auto" && isExperimentalSize(imageWidth, imageHeight);
   const qualityLabel = qualityOptions.find((option) => option.value === imageQuality)?.label || "自动";
-  const ratioLabel = imageRatio === "auto" ? "auto" : `${imageRatio}(${imageTier})`;
+  const ratioLabel = imageRatio === "auto" ? "自动" : imageRatio === "custom" ? `${imageWidth}×${imageHeight}` : `${imageRatio}(${imageTier.toUpperCase()})`;
   const imageSizeLabel = `${qualityLabel} · ${ratioLabel} · ${imageCount || 1} 张`;
   const selectedModelLabel = modelOptions.find((option) => option.value === imageModel)?.label || imageModel;
-  const isCodexModel = imageModel.toLowerCase().includes("codex");
 
   useEffect(() => {
     if (!isSizeMenuOpen) {
@@ -424,9 +414,10 @@ export function ImageComposer({
                               <Input
                                 type="number"
                                 inputMode="numeric"
-                                min="1"
+                                min="16" max="3840" step="16" aria-label="图片宽度"
+                                disabled={imageRatio === "auto"}
                                 value={imageWidth}
-                                onChange={(event) => onImageWidthChange(event.target.value)}
+                                onChange={(event) => { onImageRatioChange("custom"); onImageTierChange("custom"); onImageWidthChange(event.target.value); }}
                                 className="h-7 border-0 bg-transparent px-0 text-sm font-medium text-stone-800 shadow-none focus-visible:ring-0"
                               />
                             </div>
@@ -436,14 +427,17 @@ export function ImageComposer({
                               <Input
                                 type="number"
                                 inputMode="numeric"
-                                min="1"
+                                min="16" max="3840" step="16" aria-label="图片高度"
+                                disabled={imageRatio === "auto"}
                                 value={imageHeight}
-                                onChange={(event) => onImageHeightChange(event.target.value)}
+                                onChange={(event) => { onImageRatioChange("custom"); onImageTierChange("custom"); onImageHeightChange(event.target.value); }}
                                 className="h-7 border-0 bg-transparent px-0 text-sm font-medium text-stone-800 shadow-none focus-visible:ring-0"
                               />
                             </div>
                           </div>
                         </div>
+                        {sizeError && <p role="alert" className="mb-3 text-xs text-red-600">{sizeError}</p>}
+                        {experimental && !sizeError && <p className="mb-3 text-xs text-amber-600">实验性尺寸：上游结果可能与目标不同，实际尺寸以出图为准。</p>}
                         <div className="mb-3">
                           <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-stone-900">
                             宽高比 <Info className="size-3.5 text-stone-400" />
@@ -452,21 +446,15 @@ export function ImageComposer({
                             {aspectOptions.map((option) => {
                               const active = option.ratio === imageRatio && option.tier === imageTier && option.width === imageWidth && option.height === imageHeight;
                               const Icon = option.icon;
-                              const disabled = !isCodexModel && (option.tier === "2k" || option.tier === "4k");
                               return (
                                 <button
                                   key={`${option.ratio}-${option.tier}-${option.label}`}
                                   type="button"
-                                  disabled={disabled}
                                   className={cn(
                                     "flex h-[64px] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-stone-200 bg-white text-sm text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
                                     active && "border-stone-950",
-                                    disabled && "cursor-not-allowed border-stone-100 bg-stone-50 text-stone-300 hover:border-stone-100 hover:bg-stone-50",
                                   )}
                                   onClick={() => {
-                                    if (disabled) {
-                                      return;
-                                    }
                                     onImageRatioChange(option.ratio);
                                     onImageTierChange(option.tier);
                                     onImageWidthChange(option.width);
@@ -526,7 +514,7 @@ export function ImageComposer({
                 <button
                   type="button"
                   onClick={() => void onSubmit()}
-                  disabled={!prompt.trim()}
+                  disabled={!prompt.trim() || Boolean(sizeError)}
                   className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-stone-950 text-white transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-300 sm:size-11"
                   aria-label={referenceImages.length > 0 ? "编辑图片" : "生成图片"}
                 >

@@ -25,6 +25,7 @@ import {
   type CPAPool,
   type CPARemoteFile,
   type ImageStorageMode,
+  type ImageCalibrationSettings,
   type ImageStorageSettings,
   type ProxyRuntimeClearanceMode,
   type ProxyRuntimeEgressMode,
@@ -288,9 +289,10 @@ type SettingsStore = {
   initialize: () => Promise<void>;
   loadConfig: () => Promise<void>;
   saveConfig: () => Promise<boolean>;
+  setImageCalibrationField: <K extends keyof ImageCalibrationSettings>(key: K, value: ImageCalibrationSettings[K]) => void;
   loadBackups: (silent?: boolean) => Promise<void>;
   runBackup: () => Promise<void>;
-  removeBackup: (key: string) => Promise<void>;
+  removeBackup: (key: string) => Promise<boolean>;
   testBackup: () => Promise<void>;
   setRefreshAccountIntervalMinute: (value: string) => void;
   setImageRetentionHours: (value: string) => void;
@@ -332,7 +334,7 @@ type SettingsStore = {
   setFormSecretKey: (value: string) => void;
   setShowSecret: (checked: boolean) => void;
   savePool: () => Promise<void>;
-  deletePool: (pool: CPAPool) => Promise<void>;
+  deletePool: (pool: CPAPool) => Promise<boolean>;
 
   browseFiles: (pool: CPAPool) => Promise<void>;
   setBrowserOpen: (open: boolean) => void;
@@ -408,6 +410,13 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     } finally {
       set({ isLoadingConfig: false });
     }
+  },
+
+  setImageCalibrationField: (key, value) => {
+    set((state) => state.config ? { config: { ...state.config, image_calibration: {
+      enabled: false, worker_url: "http://127.0.0.1:3310", timeout_secs: 300,
+      ...state.config.image_calibration, [key]: value,
+    } } } : {});
   },
 
   saveConfig: async () => {
@@ -855,8 +864,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       await deleteBackup(key);
       toast.success("备份已删除");
       await get().loadBackups(true);
+      return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除备份失败");
+      return false;
     } finally {
       set({ deletingBackupKey: null });
     }
@@ -981,8 +992,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const data = await deleteCPAPool(pool.id);
       set({ pools: data.pools });
       toast.success("连接已删除");
+      return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除失败");
+      return false;
     } finally {
       set({ deletingId: null });
     }

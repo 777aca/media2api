@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -102,6 +103,7 @@ export function Sub2APIConnections() {
   const [isLoadingGroups, setIsLoadingGroups] = useState(false);
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Sub2APIServer | null>(null);
   const [loadingAccountsId, setLoadingAccountsId] = useState<string | null>(null);
 
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -285,8 +287,10 @@ export function Sub2APIConnections() {
       const data = await deleteSub2APIServer(server.id);
       setServers(data.servers);
       toast.success("连接已删除");
+      return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除失败");
+      return false;
     } finally {
       setDeletingId(null);
     }
@@ -452,7 +456,7 @@ export function Sub2APIConnections() {
                         <button
                           type="button"
                           className="rounded-lg p-2 text-stone-400 transition hover:bg-rose-50 hover:text-rose-500"
-                          onClick={() => void handleDelete(server)}
+                          onClick={() => setDeleteTarget(server)}
                           disabled={isBusy}
                           title="删除"
                         >
@@ -881,6 +885,13 @@ export function Sub2APIConnections() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <DeleteConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        title="删除 Sub2API 连接"
+        description={`确认删除连接「${deleteTarget?.name || deleteTarget?.base_url || ""}」吗？删除后需要重新配置才能同步账号。`}
+        onConfirm={() => deleteTarget ? handleDelete(deleteTarget) : Promise.resolve(false)}
+      />
     </>
   );
 }
