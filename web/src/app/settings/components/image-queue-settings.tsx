@@ -6,9 +6,9 @@ import { Button } from "@/components/ui/button";
 import { DEFAULT_QUEUE, type QueueSettings } from "@/lib/generation-runtime";
 import { useSettingsStore } from "../store";
 
-const fields: Array<{ key: keyof QueueSettings; label: string; min: number; max: number }> = [
-  { key: "global_concurrency", label: "全局同时处理图片数", min: 1, max: 64 },
-  { key: "key_concurrency", label: "默认调用 Key 并发", min: 1, max: 64 },
+const fields: Array<{ key: keyof QueueSettings; label: string; min: number; max?: number }> = [
+  { key: "global_concurrency", label: "全局同时处理图片数", min: 1 },
+  { key: "key_concurrency", label: "默认调用 Key 并发", min: 1 },
   { key: "max_waiting_images", label: "最多等待图片数", min: 1, max: 10000 },
   { key: "queue_timeout_seconds", label: "排队超时（秒）", min: 1, max: 2592000 },
   { key: "task_retention_days", label: "任务输入保留天数", min: 30, max: 3650 },

@@ -7,10 +7,11 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from services.generation_context import GenerationContext, checkpoint
 from services.generation_errors import GenerationRuntimeError, classify_image_error
-from services.generation_runtime import GenerationRuntime, DEFAULT_QUEUE
+from services.generation_runtime import GenerationRuntime, DEFAULT_QUEUE, queue_settings
 from services.generation_statistics import runtime_statistics
 from services.generation_store import GenerationStore
 from services.protocol.conversation import ConversationRequest, ImageOutput
@@ -57,6 +58,102 @@ class RuntimeTests(unittest.TestCase):
         for owner in ("a", "b"):
             ordinals = self.runtime.store.rows("SELECT ordinal FROM tasks WHERE owner=? AND status='running' ORDER BY ordinal", (owner,))
             self.assertEqual([r["ordinal"] for r in ordinals], [1, 2, 3, 4])
+
+    def test_concurrency_limits_accept_positive_integers_above_64(self):
+        for value in (65, 128, 10000):
+            with self.subTest(value=value):
+                settings = queue_settings({"global_concurrency": value, "key_concurrency": value})
+                self.assertEqual((settings["global_concurrency"], settings["key_concurrency"]), (value, value))
+                self.assertEqual(self.runtime.store.set_limits("a", {"image_concurrency_limit": value})["image_concurrency_limit"], value)
+        for value in (0, -1, True, 65.5, "128"):
+            with self.subTest(invalid=value):
+                for field in ("global_concurrency", "key_concurrency"):
+                    with self.assertRaises(ValueError):
+                        queue_settings({field: value})
+                with self.assertRaises(ValueError):
+                    self.runtime.store.set_limits("a", {"image_concurrency_limit": value})
+        with self.assertRaises(ValueError):
+            queue_settings({"max_waiting_images": 10001})
+
+    def test_live_increase_executes_more_than_64_and_lowering_preserves_started_tasks(self):
+        started = []
+        started_lock = threading.Lock()
+        all_started = threading.Event()
+
+        def execute(request, index, total, row):
+            with started_lock:
+                started.append(row["id"])
+                if len(started) == 65:
+                    all_started.set()
+            self.release.wait()
+            return [ImageOutput(kind="result", model=request.model, index=index, total=total, data=[{"url": "/images/synthetic.png"}])]
+
+        self.runtime.execute = execute
+        self.runtime.store.set_limits("a", {"image_concurrency_limit": 65})
+        for _ in range(4):
+            self.submit(n=16)
+        self.submit()
+        self.wait_for(lambda: len(started) == 8)
+        self.settings.update(queue_settings({"global_concurrency": 65, "key_concurrency": 65}))
+        self.runtime.dispatch_once()
+        self.assertTrue(all_started.wait(5), f"only {len(started)} of 65 tasks reached the executor")
+        self.assertEqual(len(self.runtime._active), 65)
+
+        self.settings.update(global_concurrency=1, key_concurrency=1)
+        waiting = self.submit("b")
+        self.runtime.dispatch_once()
+        self.assertEqual(self.runtime.jobs(self.identities["b"], [waiting])[0]["status"], "queued")
+        self.assertEqual(len(self.runtime._active), 65)
+        self.release.set()
+        self.wait_for(lambda: self.runtime.store.quota("a")["image_quota_used"] == 65 and self.runtime.store.quota("b")["image_quota_used"] == 1)
+        self.assertEqual(len(started), 66)
+        self.assertEqual(len(set(started)), 66)
+        self.assertEqual(self.runtime.store.quota("a")["image_quota_reserved"], 0)
+
+    def test_stop_waits_for_retired_workers_before_releasing_directory_lease(self):
+        self.settings.update(global_concurrency=1, key_concurrency=1)
+
+        def execute(request, index, total, row):
+            if row["owner"] == "a":
+                self.release.wait()
+            return [ImageOutput(kind="result", model=request.model, index=index, total=total, data=[{"url": "/images/synthetic.png"}])]
+
+        self.runtime.execute = execute
+        self.submit()
+        self.wait_for(lambda: len(self.runtime._active) == 1)
+        old_pool = self.runtime._pool
+        self.settings.update(global_concurrency=2)
+        self.submit("b")
+        self.wait_for(lambda: self.runtime.store.quota("b")["image_quota_used"] == 1)
+        draining = threading.Event()
+        stopped = threading.Event()
+        original_shutdown = old_pool.shutdown
+
+        def shutdown(*args, **kwargs):
+            if kwargs.get("wait"):
+                draining.set()
+            return original_shutdown(*args, **kwargs)
+
+        def stop():
+            self.runtime.stop()
+            stopped.set()
+
+        stopper = threading.Thread(target=stop)
+        second = GenerationRuntime(self.directory)
+        try:
+            with mock.patch.object(old_pool, "shutdown", side_effect=shutdown):
+                stopper.start()
+                self.assertTrue(draining.wait(5))
+                self.assertFalse(stopped.is_set())
+                with self.assertRaises(RuntimeError):
+                    second.start()
+                self.release.set()
+                self.assertTrue(stopped.wait(5))
+        finally:
+            self.release.set()
+            stopper.join(timeout=5)
+            second.stop()
+            second.store.close()
 
     def test_atomic_reservations_and_idempotency(self):
         self.runtime.store.set_limits("a", {"image_quota_limit": 5})

@@ -76,6 +76,24 @@ class GenerationAPITests(unittest.TestCase):
                 self.fail("timeout")
             time.sleep(.02)
 
+    def test_user_key_concurrency_above_64_round_trips_and_still_requires_positive_integers(self):
+        created = self.client.post("/api/auth/users", headers=self.admin, json={"name": "large-concurrency", "image_concurrency_limit": 128})
+        self.assertEqual(created.status_code, 200, created.text)
+        item = created.json()["item"]
+        self.assertEqual(item["image_concurrency_limit"], 128)
+        path = f"/api/auth/users/{item['id']}"
+        updated = self.client.post(path, headers=self.admin, json={"image_concurrency_limit": 256})
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["item"]["image_concurrency_limit"], 256)
+        for value in (0, -1, True, 65.5, "128"):
+            with self.subTest(invalid=value):
+                self.assertEqual(self.client.post("/api/auth/users", headers=self.admin, json={"image_concurrency_limit": value}).status_code, 422)
+                self.assertEqual(self.client.post(path, headers=self.admin, json={"image_concurrency_limit": value}).status_code, 422)
+                self.assertEqual(self.runtime.store.quota(item["id"])["image_concurrency_limit"], 256)
+        reset = self.client.post(path, headers=self.admin, json={"image_concurrency_limit": None})
+        self.assertEqual(reset.status_code, 200, reset.text)
+        self.assertIsNone(reset.json()["item"]["image_concurrency_limit"])
+
     def test_all_sync_and_streaming_protocols_return_task_id_and_deduplicate(self):
         paths = [("/v1/images/generations", {"prompt": "draw"}),
                  ("/v1/images/edits", {"prompt": "draw", "images": [{"b64_json": self.png}]}),

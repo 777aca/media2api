@@ -25,9 +25,10 @@ def queue_settings(value: object) -> dict:
     settings = dict(DEFAULT_QUEUE)
     for key, default in settings.items():
         candidate = value.get(key, default)
-        maximum = 64 if "concurrency" in key else (10000 if key == "max_waiting_images" else 2592000)
-        if type(candidate) is not int or not 1 <= candidate <= maximum:
-            raise ValueError(f"{key} 必须是 1 至 {maximum} 的整数")
+        maximum = None if "concurrency" in key else (10000 if key == "max_waiting_images" else 2592000)
+        if type(candidate) is not int or candidate < 1 or (maximum is not None and candidate > maximum):
+            constraint = "正整数" if maximum is None else f"1 至 {maximum} 的整数"
+            raise ValueError(f"{key} 必须是{constraint}")
         settings[key] = candidate
     settings["task_retention_days"] = max(30, settings["task_retention_days"])
     return settings
@@ -53,6 +54,8 @@ class GenerationRuntime:
         self._owners: deque[str] = deque()
         self._last_owner = ""
         self._pool = None
+        self._pool_workers = 0
+        self._retired_pools: list[ThreadPoolExecutor] = []
         self._thread = None
         self._lease = None
         self._last_cleanup = 0.0
@@ -93,7 +96,7 @@ class GenerationRuntime:
             self._stop.clear()
             self.store.recover()
             self._import_legacy()
-            self._pool = ThreadPoolExecutor(max_workers=64, thread_name_prefix="image-worker")
+            self._resize_pool(self.settings_getter()["global_concurrency"])
             self._thread = threading.Thread(target=self._dispatch, name="image-dispatcher", daemon=True)
             self._thread.start()
 
@@ -105,10 +108,25 @@ class GenerationRuntime:
         if self._pool:
             # Hold the directory lease until all upstream activity has stopped.
             self._pool.shutdown(wait=True, cancel_futures=False)
+        for pool in self._retired_pools:
+            pool.shutdown(wait=True, cancel_futures=False)
+        self._pool = None
+        self._pool_workers = 0
+        self._retired_pools.clear()
         self._thread = None
         if self._lease:
             self._lease.close()
             self._lease = None
+
+    def _resize_pool(self, max_workers: int) -> None:
+        if self._pool_workers == max_workers:
+            return
+        replacement = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="image-worker")
+        if self._pool:
+            self._pool.shutdown(wait=False, cancel_futures=False)
+            self._retired_pools.append(self._pool)
+        self._pool = replacement
+        self._pool_workers = max_workers
 
     def _private_path(self, job_id: str, filename: str) -> Path:
         if not job_id.isalnum() or Path(filename).name != filename:
@@ -212,6 +230,10 @@ class GenerationRuntime:
             else:
                 by_owner.setdefault(owner, []).append(row)
         with self._lock:
+            if self._stop.is_set():
+                return
+            if self._thread:
+                self._resize_pool(settings["global_concurrency"])
             for owner in by_owner:
                 if owner not in self._owners:
                     self._owners.append(owner)

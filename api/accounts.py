@@ -39,12 +39,12 @@ from services.sub2api_service import (
 class UserKeyCreateRequest(BaseModel):
     name: str = ""
     image_quota_limit: int | None = Field(default=None, strict=True, ge=0)
-    image_concurrency_limit: int | None = Field(default=None, strict=True, ge=1, le=64)
+    image_concurrency_limit: int | None = Field(default=None, strict=True, ge=1)
 
 
 class UserKeyUpdateRequest(BaseModel):
     image_quota_limit: int | None = Field(default=None, strict=True, ge=0)
-    image_concurrency_limit: int | None = Field(default=None, strict=True, ge=1, le=64)
+    image_concurrency_limit: int | None = Field(default=None, strict=True, ge=1)
     name: str | None = None
     enabled: bool | None = None
     key: str | None = None

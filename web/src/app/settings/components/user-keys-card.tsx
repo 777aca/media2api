@@ -38,14 +38,14 @@ function formatDateTime(value?: string | null) {
 function parseLimit(value: string, minimum: number) {
   if (!value.trim()) return null;
   const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < minimum || (minimum === 1 && number > 64)) throw new Error(minimum === 1 ? "并发请填写 1 至 64 的整数" : "额度请填写非负整数");
+  if (!Number.isSafeInteger(number) || number < minimum) throw new Error(minimum === 1 ? "并发请填写正整数" : "额度请填写非负整数");
   return number;
 }
 
 function KeyLimits({ quota, concurrency, setQuota, setConcurrency }: { quota: string; concurrency: string; setQuota: (value: string) => void; setConcurrency: (value: string) => void }) {
   return <div className="grid gap-4 sm:grid-cols-2">
     <label className="space-y-2 text-sm"><span>累计成功图片额度</span><Input type="number" min={0} step={1} placeholder="不限额" value={quota} onChange={(event) => setQuota(event.target.value)} /><span className="block text-xs text-muted-foreground">留空不限额，0 表示不可新增任务。</span></label>
-    <label className="space-y-2 text-sm"><span>调用 Key 并发</span><Input type="number" min={1} max={64} step={1} placeholder="使用默认值" value={concurrency} onChange={(event) => setConcurrency(event.target.value)} /><span className="block text-xs text-muted-foreground">此 Key 同时处理的图片数；留空使用生图调度默认值，初始为 4。</span></label>
+    <label className="space-y-2 text-sm"><span>调用 Key 并发</span><Input type="number" min={1} step={1} placeholder="使用默认值" value={concurrency} onChange={(event) => setConcurrency(event.target.value)} /><span className="block text-xs text-muted-foreground">此 Key 同时处理的图片数；留空使用生图调度默认值，初始为 4。</span></label>
   </div>;
 }
 

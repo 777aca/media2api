@@ -100,8 +100,6 @@ class GenerationStore:
                 value = updates[field]
                 if value is not None and (type(value) is not int or value < (1 if column == "concurrency_limit" else 0)):
                     raise ValueError("图片额度必须是非负整数，并发必须是正整数；留空使用默认值")
-                if column == "concurrency_limit" and value is not None and value > 64:
-                    raise ValueError("单 Key 图片并发不能超过 64")
                 if column == "quota_limit" and value is not None and value < row["used"] + row["reserved"]:
                     raise ValueError("额度上限不能低于已用张数与预占张数之和")
                 db.execute(f"UPDATE key_usage SET {column}=? WHERE owner=?", (value, owner))
