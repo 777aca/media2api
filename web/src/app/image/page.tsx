@@ -18,8 +18,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
-  createImageEditTask,
-  createImageGenerationTask,
   fetchAccounts,
   fetchModels,
   fetchImageTasks,
@@ -29,6 +27,7 @@ import {
   type Model,
   type ImageTask,
 } from "@/lib/api";
+import { cancelImageTask, createImageTaskBatch, fetchImageQuota } from "@/lib/generation-runtime";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { useSettingsStore } from "@/app/settings/store";
 import {
@@ -232,14 +231,16 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
     };
   }
 
-  if (task.status === "error") {
+  if (task.status === "error" || task.status === "cancelled" || task.status === "uncertain") {
     return {
       ...image,
       taskId: task.id,
       status: "error",
       taskStatus: undefined,
       progress: undefined,
-      error: task.error || "生成失败",
+      error: task.status === "uncertain" ? "结果待确认，已保留额度预占。可恢复原任务，或由管理员结束。" : (task.error || (task.status === "cancelled" ? "已取消" : "生成失败")),
+      resultUncertain: task.status === "uncertain",
+      canRecover: Boolean(task.conversation_id || task.phase === "raw_saved" || task.phase === "output_saved"),
       durationMs: task.duration_ms,
     };
   }
@@ -258,7 +259,8 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
     taskId: task.id,
     status: "loading",
     taskStatus: newTaskStatus,
-    progress: task.progress || image.progress,
+    progress: task.recovery_status === "recovering_result" ? "recovering_result" : task.progress || image.progress,
+    queueSeconds: task.queue_seconds,
     error: undefined,
     startTime,
     elapsedSecs,
@@ -722,7 +724,10 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
   const loadQuota = useCallback(async () => {
     if (!isAdmin) {
-      setAvailableQuota("--");
+      try {
+        const quota = await fetchImageQuota();
+        setAvailableQuota(quota.image_quota_remaining == null ? "不限额" : String(quota.image_quota_remaining));
+      } catch { setAvailableQuota("--"); }
       return;
     }
     try {
@@ -1186,7 +1191,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       };
     });
 
-  /* eslint-disable react-hooks/preserve-manual-memoization */
   const runConversationQueue = useCallback(
     async (conversationId: string) => {
       if (activeConversationQueueIds.has(conversationId)) {
@@ -1242,15 +1246,13 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         }
 
         const pendingImages = activeTurn.images.filter((image) => image.status === "loading");
-        const submitted = await Promise.all(
-          pendingImages.map((image) => {
-            const taskId = image.taskId || image.id;
-            return activeTurn.mode === "edit"
-              ? createImageEditTask(taskId, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality)
-              : createImageGenerationTask(taskId, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality);
-          }),
-        );
-        await applyTasks(submitted);
+        const taskIds = pendingImages.map((image) => image.taskId || image.id);
+        const existing = await fetchImageTasks(taskIds);
+        await applyTasks(existing.items);
+        if (existing.missing_ids.length) {
+          const submitted = await createImageTaskBatch(existing.missing_ids, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality);
+          await applyTasks(submitted);
+        }
 
         let consecutiveErrors = 0;
         const retryingTaskIdsRef = new Set<string>();
@@ -1273,7 +1275,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
               // 检测是否有超时错误且需要显示重试按钮
               const timeoutTask = taskList.items.find(
                 (task) =>
-                  task.status === "error" &&
+                  (task.status === "uncertain" || task.status === "error") &&
                   task.error?.includes("超时") &&
                   task.conversation_id &&
                   !retryingTaskIdsRef.has(task.id),
@@ -1295,16 +1297,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
               const missingImages = latestTurn.images.filter(
                 (image) => image.status === "loading" && image.taskId && taskList.missing_ids.includes(image.taskId),
               );
-              const resubmitted = await Promise.all(
-                missingImages.map((image) =>
-                  activeTurn.mode === "edit"
-                    ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality)
-                    : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality),
-                ),
-              );
-              if (resubmitted.length > 0) {
-                await applyTasks(resubmitted);
-              }
+              if (missingImages.length) throw new Error("任务记录暂时不可用，请稍后查询；系统不会自动重新生成");
             }
           } catch (pollError) {
             consecutiveErrors += 1;
@@ -1355,7 +1348,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     },
     [loadQuota, updateConversation],
   );
-  /* eslint-enable react-hooks/preserve-manual-memoization */
 
   const handleRegenerateTurn = useCallback(
     async (conversationId: string, turnId: string) => {
@@ -1708,6 +1700,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
                 onReuseTurnConfig={handleReuseTurnConfig}
                 onRegenerateTurn={handleRegenerateTurn}
                 onRetryImage={handleRetryImage}
+                onCancelTask={async (taskId) => { try { await cancelImageTask(taskId); toast.success("已请求取消等待任务"); } catch (error) { toast.error(error instanceof Error ? error.message : "取消失败"); } }}
                 onTimeoutRetryContinue={handleTimeoutRetryContinue}
                 onDismissErrors={handleDismissErrors}
                 formatConversationTime={formatConversationTime}

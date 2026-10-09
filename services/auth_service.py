@@ -77,6 +77,7 @@ class AuthService:
 
     @staticmethod
     def _public_item(item: dict[str, object]) -> dict[str, object]:
+        from services.generation_runtime import get_generation_runtime
         return {
             "id": item.get("id"),
             "name": item.get("name"),
@@ -84,7 +85,13 @@ class AuthService:
             "enabled": bool(item.get("enabled", True)),
             "created_at": item.get("created_at"),
             "last_used_at": item.get("last_used_at"),
+            **get_generation_runtime().store.quota(str(item.get("id"))),
         }
+
+    def find_identity(self, key_id: str) -> dict | None:
+        with self._lock:
+            item = next((item for item in self._items if item.get("id") == key_id), None)
+            return {key: value for key, value in item.items() if key != "key_hash"} if item else None
 
     def list_keys(self, role: AuthRole | None = None) -> list[dict[str, object]]:
         with self._lock:
@@ -147,7 +154,7 @@ class AuthService:
             raise ValueError("这个名称已经在使用中了，换一个更容易区分的名称吧")
         return candidate
 
-    def create_key(self, *, role: AuthRole, name: str = "") -> tuple[dict[str, object], str]:
+    def create_key(self, *, role: AuthRole, name: str = "", image_quota_limit: int | None = None, image_concurrency_limit: int | None = None) -> tuple[dict[str, object], str]:
         with self._lock:
             self._reload_locked()
             normalized_name = self._build_name_locked(name, role=role)
@@ -167,6 +174,8 @@ class AuthService:
                 "created_at": _now_iso(),
                 "last_used_at": None,
             }
+            from services.generation_runtime import get_generation_runtime
+            get_generation_runtime().store.set_limits(str(item["id"]), {"image_quota_limit": image_quota_limit, "image_concurrency_limit": image_concurrency_limit})
             self._items.append(item)
             self._save()
             return self._public_item(item), raw_key
@@ -200,6 +209,8 @@ class AuthService:
                     next_item["enabled"] = bool(updates.get("enabled"))
                 if "key" in updates and updates.get("key") is not None:
                     next_item["key_hash"] = self._build_key_hash_locked(str(updates.get("key") or ""), exclude_id=normalized_id)
+                from services.generation_runtime import get_generation_runtime
+                get_generation_runtime().store.set_limits(normalized_id, updates)
                 self._items[index] = next_item
                 self._save()
                 return self._public_item(next_item)

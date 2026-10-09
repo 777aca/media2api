@@ -76,6 +76,16 @@ def _payload_from_fields(fields: dict[str, Any]) -> dict[str, Any]:
     }
     if "client_task_id" in fields:
         payload["client_task_id"] = _clean(fields.get("client_task_id"))
+    if "client_task_ids" in fields:
+        import json
+        value = fields["client_task_ids"]
+        try:
+            ids = json.loads(value) if isinstance(value, str) else value
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid client_task_ids") from exc
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 16 or not all(isinstance(key, str) and 0 < len(key) <= 256 for key in ids):
+            raise HTTPException(status_code=400, detail="invalid client_task_ids")
+        payload["client_task_ids"] = ids
     return payload
 
 
@@ -183,7 +193,7 @@ async def parse_image_edit_request(request: Request) -> tuple[dict[str, Any], li
 
     form = await request.form()
     fields: dict[str, Any] = {}
-    for key in ("client_task_id", "prompt", "model", "n", "size", "quality", "response_format", "stream"):
+    for key in ("client_task_ids", "client_task_id", "prompt", "model", "n", "size", "quality", "response_format", "stream"):
         value = form.get(key)
         if isinstance(value, str):
             fields[key] = value

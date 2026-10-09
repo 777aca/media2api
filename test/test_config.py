@@ -58,6 +58,47 @@ class ConfigLoadingTests(unittest.TestCase):
                 else:
                     module.os.environ["MEDIA2API_AUTH_KEY"] = old_env_auth_key
 
+    def test_removed_canvas_settings_preserve_legacy_file_and_other_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_file = Path(tmp_dir) / "config.json"
+            legacy_apps = {"infinite_canvas": {"enabled": True, "url": "https://canvas.example.test"}}
+            original = {
+                "auth-key": "synthetic-auth-key",
+                "base_url": "https://api.example.test",
+                "third_party_apps": legacy_apps,
+                "image_account_concurrency": 3,
+            }
+            config_file.write_text(json.dumps(original), encoding="utf-8")
+            store = self.config_module.ConfigStore(config_file)
+
+            self.assertNotIn("third_party_apps", store.get())
+            self.assertEqual(json.loads(config_file.read_text(encoding="utf-8")), original)
+
+            updated = store.update({
+                "base_url": "https://updated.example.test",
+                "third_party_apps": {"infinite_canvas": {"enabled": False, "url": "https://other.example.test"}},
+            })
+            self.assertNotIn("third_party_apps", updated)
+            self.assertEqual(updated["base_url"], "https://updated.example.test")
+            self.assertEqual(updated["image_account_concurrency"], 3)
+            persisted = json.loads(config_file.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["third_party_apps"], legacy_apps)
+            self.assertEqual(persisted["auth-key"], original["auth-key"])
+
+    def test_legacy_client_cannot_add_removed_canvas_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_file = Path(tmp_dir) / "config.json"
+            config_file.write_text(json.dumps({"auth-key": "synthetic-auth-key"}), encoding="utf-8")
+            store = self.config_module.ConfigStore(config_file)
+
+            updated = store.update({
+                "third_party_apps": {"infinite_canvas": {"enabled": True, "url": "https://canvas.example.test"}},
+                "image_account_concurrency": 5,
+            })
+            self.assertNotIn("third_party_apps", updated)
+            self.assertNotIn("third_party_apps", json.loads(config_file.read_text(encoding="utf-8")))
+            self.assertEqual(updated["image_account_concurrency"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

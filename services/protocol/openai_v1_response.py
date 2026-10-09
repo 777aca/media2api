@@ -438,6 +438,7 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
     input_image_tokens = count_image_content_tokens(_input_image_parts(body.get("input")), model)
     tool = response_image_tool(body)
     image_outputs = stream_image_outputs_with_pool(ConversationRequest(
+        generation_context=body.get("_image_context"),
         prompt=prompt,
         model=model,
         size=tool.get("size"),

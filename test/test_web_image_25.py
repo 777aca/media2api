@@ -92,13 +92,14 @@ class WebImage25RequestTests(unittest.TestCase):
                 backend = mock.Mock()
 
                 def fail(backend, *_args):
-                    backend.progress_callback("generating")
+                    from services.generation_context import checkpoint
+                    checkpoint("submitted", conversation_id="conversation-id")
                     raise failure
 
                 with mock.patch.object(conversation, "OpenAIBackendAPI", return_value=backend), \
                         mock.patch.object(conversation, "stream_image_outputs", side_effect=fail) as generate, \
                         mock.patch.object(conversation, "_remove_image_conversation_later"), \
-                        mock.patch.object(conversation.account_service, "get_available_access_token", return_value="private-token"), \
+                        mock.patch.object(conversation.account_service, "acquire_governed_image_token", return_value="private-token"), \
                         mock.patch.object(conversation.account_service, "get_account", return_value={}), \
                         mock.patch.object(conversation.account_service, "refresh_access_token") as refresh, \
                         mock.patch.object(conversation.account_service, "mark_image_result") as settle:

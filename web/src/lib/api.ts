@@ -23,6 +23,7 @@ export type ImageStorageSettings = {
 };
 
 export type Account = {
+  image_blocks?: Record<string, { reason: string; until: number | null }>;
   pool_account_id?: string;
   access_token: string;
   type: AccountType;
@@ -147,16 +148,10 @@ export type ProxyRuntimeResponse = {
   status: ProxyRuntimeStatus;
 };
 
-export type ThirdPartyAppsSettings = {
-  infinite_canvas: {
-    enabled: boolean;
-    url: string;
-  };
-};
-
 export type ImageCalibrationSettings = { enabled: boolean; worker_url: string; timeout_secs: number };
 
 export type SettingsConfig = {
+  image_queue?: import("./generation-runtime").QueueSettings;
   image_calibration?: ImageCalibrationSettings;
   proxy: string;
   base_url?: string;
@@ -189,7 +184,6 @@ export type SettingsConfig = {
   log_levels?: string[];
   image_storage?: ImageStorageSettings;
   proxy_runtime?: ProxyRuntimeSettings;
-  third_party_apps?: ThirdPartyAppsSettings;
   backup?: BackupSettings;
   backup_state?: BackupState;
   [key: string]: unknown;
@@ -288,8 +282,13 @@ export type ImageResponse = {
 };
 
 export type ImageTask = {
+  task_id?: string;
+  phase?: string;
+  recovery_status?: string;
+  queue_seconds?: number;
+  error_category?: string;
   id: string;
-  status: "queued" | "running" | "success" | "error";
+  status: "queued" | "running" | "success" | "error" | "uncertain" | "cancelled";
   mode: "generate" | "edit";
   model?: ImageModel;
   size?: string;
@@ -318,6 +317,11 @@ export type LoginResponse = {
 };
 
 export type UserKey = {
+  image_quota_limit?: number | null;
+  image_concurrency_limit?: number | null;
+  image_quota_used?: number;
+  image_quota_reserved?: number;
+  image_quota_remaining?: number | null;
   id: string;
   name: string;
   role: "user";
@@ -547,10 +551,6 @@ export async function updateSettingsConfig(settings: SettingsConfig) {
   });
 }
 
-export async function fetchThirdPartyApps() {
-  return httpRequest<{ third_party_apps: ThirdPartyAppsSettings }>("/api/third-party-apps");
-}
-
 export async function testBackupConnection() {
   return httpRequest<{ result: { ok: boolean; status: number } }>("/api/backup/test", {
     method: "POST",
@@ -708,14 +708,14 @@ export async function fetchUserKeys() {
   return httpRequest<{ items: UserKey[] }>("/api/auth/users");
 }
 
-export async function createUserKey(name: string) {
+export async function createUserKey(name: string, limits: { image_quota_limit?: number | null; image_concurrency_limit?: number | null } = {}) {
   return httpRequest<{ item: UserKey; key: string; items: UserKey[] }>("/api/auth/users", {
     method: "POST",
-    body: { name },
+    body: { name, ...limits },
   });
 }
 
-export async function updateUserKey(keyId: string, updates: { enabled?: boolean; name?: string; key?: string }) {
+export async function updateUserKey(keyId: string, updates: { enabled?: boolean; name?: string; key?: string; image_quota_limit?: number | null; image_concurrency_limit?: number | null }) {
   return httpRequest<{ item: UserKey; items: UserKey[] }>(`/api/auth/users/${keyId}`, {
     method: "POST",
     body: updates,

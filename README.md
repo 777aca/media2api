@@ -2,7 +2,7 @@
 
 <p align="center">media2api 主要是对 ChatGPT 官网相关能力进行逆向整理与封装，提供面向 ChatGPT 图片生成、图片编辑、多图组图编辑场景的 OpenAI 兼容图片 API / 代理，并集成在线画图、号池管理、多种账号导入方式与 Docker 自托管部署能力。</p>
 
-当前版本：[0.1.2](./VERSION) · [GitHub 仓库](https://github.com/777aca/media2api) · [更新日志](./CHANGELOG.md)
+当前版本：[0.1.4](./VERSION) · [GitHub 仓库](https://github.com/777aca/media2api) · [更新日志](./CHANGELOG.md)
 
 > [!WARNING]
 > 免责声明：

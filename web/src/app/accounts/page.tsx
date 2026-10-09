@@ -1,5 +1,7 @@
 "use client";
 
+import { clearImageCooldown } from "@/lib/generation-runtime";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import {
@@ -176,6 +178,11 @@ function displayAccountSource(account: Account) {
 function AccountsPageContent() {
   const didLoadRef = useRef(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [cooldownNow, setCooldownNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setCooldownNow(Date.now()), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
   const modelCatalog = useModelCatalog();
   const didLoadAccountsRef = useRef(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -1058,7 +1065,7 @@ function AccountsPageContent() {
               </div>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="isolate overflow-x-auto">
               <table className="w-full min-w-[1360px] text-left">
                 <thead className="whitespace-nowrap border-b border-stone-100 text-[11px] text-stone-400 uppercase tracking-[0.18em]">
                   <tr>
@@ -1081,7 +1088,7 @@ function AccountsPageContent() {
                     <th className="w-16 px-3 py-3">在途</th>
                     <th className="w-16 px-3 py-3">成功</th>
                     <th className="w-16 px-3 py-3">失败</th>
-                    <th className="w-24 px-4 py-3">操作</th>
+                    <th className="sticky right-0 z-20 w-24 bg-card px-4 py-3 before:pointer-events-none before:absolute before:inset-y-0 before:left-0 before:w-px before:bg-border">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1092,7 +1099,7 @@ function AccountsPageContent() {
                     return (
                       <tr
                         key={account.access_token}
-                        className="border-b border-stone-100/80 text-sm text-stone-600 transition-colors hover:bg-stone-50/70"
+                        className="group border-b border-stone-100/80 text-sm text-stone-600 transition-colors hover:bg-stone-50/70"
                       >
                         <td className="px-4 py-3">
                           <Checkbox
@@ -1141,6 +1148,13 @@ function AccountsPageContent() {
                             <StatusIcon className="size-3.5 shrink-0" />
                             {account.status}
                           </Badge>
+                          {Object.entries(account.image_blocks ?? {}).filter(([, block]) => block.until == null || block.until * 1000 > cooldownNow).map(([scope, block]) => (
+                            <div key={scope} className="mt-1 text-[11px] leading-5 text-amber-600">
+                              <div>{scope} · {({ rate_limited: "上游限流", transient: "临时故障", access_denied: "通道拒绝", model_permission: "缺少模型权限" } as Record<string, string>)[block.reason] || block.reason}</div>
+                              <div>{block.until == null ? "等待管理员解除" : `剩余 ${Math.max(1, Math.ceil((block.until * 1000 - cooldownNow) / 60000))} 分钟`}</div>
+                            </div>
+                          ))}
+                          {Object.keys(account.image_blocks ?? {}).length > 0 && account.pool_account_id && <Button size="sm" variant="ghost" className="mt-1 h-6 px-1 text-xs" onClick={async () => { try { await clearImageCooldown(account.pool_account_id!); await loadAccounts(true); toast.success("已解除生图冷却与权限暂停"); } catch (error) { toast.error(error instanceof Error ? error.message : "解除失败"); } }}>解除限制</Button>}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3 text-center font-medium tabular-nums text-stone-700">
                           {account.priority ?? DEFAULT_ACCOUNT_PRIORITY}
@@ -1201,7 +1215,7 @@ function AccountsPageContent() {
                         </td>
                         <td className="px-3 py-3 tabular-nums text-stone-500">{account.success}</td>
                         <td className="px-3 py-3 tabular-nums text-stone-500">{account.fail}</td>
-                        <td className="px-4 py-3">
+                        <td className="sticky right-0 z-10 bg-card px-4 py-3 transition-colors before:pointer-events-none before:absolute before:inset-y-0 before:left-0 before:w-px before:bg-border group-hover:bg-stone-50 dark:group-hover:bg-stone-800">
                           <div className="flex items-center gap-1 text-stone-400">
                             <button
                               type="button"

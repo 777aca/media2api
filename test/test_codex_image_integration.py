@@ -75,13 +75,21 @@ class WebImage25Fixture:
         self.old_direct = mock.patch.object(codex_image_service, "generate_codex_image", side_effect=AssertionError("direct image route used")).start()
         self.old_codex = mock.patch.object(conversation, "stream_codex_image_outputs", side_effect=AssertionError("legacy Codex image route used")).start()
         mock.patch.object(conversation, "_remove_image_conversation_later").start()
+        from services.generation_runtime import GenerationRuntime, DEFAULT_QUEUE
+        self.runtime = GenerationRuntime(self.path, settings_getter=lambda: {**DEFAULT_QUEUE, "queue_timeout_seconds": 1})
+        mock.patch("services.generation_runtime._runtime", self.runtime).start()
+        self.addCleanup(self.runtime.store.close)
+        self.addCleanup(self.runtime.stop)
+
 
     def web_outputs(self, _backend, request, index=1, total=1):
         return [conversation.ImageOutput(kind="result", model=request.model, index=index, total=total,
                                          data=[{"b64_json": self.image_b64}], conversation_id="synthetic-conversation")]
 
     def request(self, *, n: int = 1, model: str = WEB_MODELS[0]) -> conversation.ConversationRequest:
-        return conversation.ConversationRequest(model=model, prompt="Draw a cat", n=n)
+        from services.generation_context import GenerationContext
+        context = GenerationContext({"id": "admin", "role": "admin"}, "/internal/test") if n > 1 else None
+        return conversation.ConversationRequest(model=model, prompt="Draw a cat", n=n, generation_context=context)
 
 
 class WebImage25PoolIntegrationTests(WebImage25Fixture, unittest.TestCase):
@@ -170,6 +178,8 @@ class WebImage25PoolIntegrationTests(WebImage25Fixture, unittest.TestCase):
                 count += 1
             started.wait(timeout=3)
             if index == 0:
+                from services.generation_context import checkpoint
+                checkpoint("submitting")
                 raise UpstreamHTTPError("/backend-api/f/conversation", 502, {})
             return self.web_outputs(*args)
 
@@ -254,6 +264,7 @@ class WebImage25ApiIntegrationTests(WebImage25Fixture, unittest.TestCase):
             ("/v1/responses", {"input": "Draw a cat"}),
         ):
             with self.subTest(path=path):
+                self.accounts.clear_image_blocks(self.token)
                 response = self.client.post(path, headers=self.headers, json={**payload, "model": WEB_MODELS[0]})
                 self.assertEqual(response.status_code, 403)
                 self.assertEqual(response.json()["error"]["code"], "upstream_access_denied")

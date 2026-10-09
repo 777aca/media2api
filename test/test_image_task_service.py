@@ -6,7 +6,7 @@ import time
 import unittest
 from pathlib import Path
 
-from services.image_task_service import ImageTaskService
+from test.legacy_image_task_fixture import ImageTaskService
 
 
 OWNER = {"id": "owner-1", "name": "Owner", "role": "admin"}

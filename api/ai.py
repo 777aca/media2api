@@ -74,6 +74,8 @@ async def filter_or_log(call: LoggedCall, text: str) -> None:
     try:
         await run_in_threadpool(check_request, text)
     except HTTPException as exc:
+        from services.generation_protocol import record_image_rejection
+        record_image_rejection(call.identity, call.endpoint, call.request_params or {"model": call.model}, exc)
         call.log("调用失败", status="failed", error=str(exc.detail))
         raise
 
@@ -117,7 +119,7 @@ def create_router() -> APIRouter:
         payload = body.model_dump(mode="python")
         payload["base_url"] = resolve_image_base_url(request)
         call = LoggedCall(identity, "/v1/images/generations", body.model, "文生图", request_text=body.prompt,
-                          request_params=await read_request_parameters(request))
+                          idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request))
         await filter_or_log(call, body.prompt)
         return await call.run(openai_v1_image_generations.handle, payload)
 
@@ -131,7 +133,7 @@ def create_router() -> APIRouter:
         prompt = str(payload["prompt"])
         model = str(payload["model"])
         call = LoggedCall(identity, "/v1/images/edits", model, "图生图", request_text=prompt,
-                          request_params=await read_request_parameters(request))
+                          idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request))
         await filter_or_log(call, prompt)
         try:
             payload["images"] = await read_image_sources(image_sources)
@@ -156,7 +158,7 @@ def create_router() -> APIRouter:
             "文本生成",
             request_text=request_preview,
             request_shape=request_shape(payload.get("messages")),
-            request_params=await read_request_parameters(request),
+            idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request),
         )
         await filter_or_log(call, request_preview)
         return await call.run(openai_v1_chat_complete.handle, payload)
@@ -174,7 +176,7 @@ def create_router() -> APIRouter:
             "Responses",
             request_text=request_preview,
             request_shape=request_shape(payload.get("input")),
-            request_params=await read_request_parameters(request),
+            idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request),
         )
         await filter_or_log(call, request_preview)
         return await call.run(openai_v1_response.handle, payload)
@@ -192,7 +194,7 @@ def create_router() -> APIRouter:
         model = str(payload.get("model") or "auto")
         request_preview = request_text(payload.get("system"), payload.get("messages"), payload.get("tools"))
         call = LoggedCall(identity, "/v1/messages", model, "Messages", request_text=request_preview,
-                          request_params=await read_request_parameters(request))
+                          idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request))
         await filter_or_log(call, request_preview)
         return await call.run(anthropic_v1_messages.handle, payload, sse="anthropic")
 
@@ -200,7 +202,7 @@ def create_router() -> APIRouter:
     async def search(body: SearchRequest, request: Request, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
         call = LoggedCall(identity, "/v1/search", openai_search.MODEL, "搜索", request_text=body.prompt,
-                          request_params=await read_request_parameters(request))
+                          idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request))
         await filter_or_log(call, body.prompt)
         return await call.run(openai_search.handle, body.model_dump(mode="python"))
 
@@ -222,7 +224,7 @@ def create_router() -> APIRouter:
     async def create_ppt_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
         call = LoggedCall(identity, "/v1/ppt/generations", "gpt-5-5-thinking", "PPT生成任务", request_text=body.prompt,
-                          request_params=await read_request_parameters(request))
+                          idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request))
         await filter_or_log(call, body.prompt)
         return await run_in_threadpool(
             editable_file_task_service.submit_ppt,
@@ -238,7 +240,7 @@ def create_router() -> APIRouter:
     async def create_psd_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
         call = LoggedCall(identity, "/v1/psd/generations", "gpt-5-5-thinking", "PSD生成任务", request_text=body.prompt,
-                          request_params=await read_request_parameters(request))
+                          idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request))
         await filter_or_log(call, body.prompt)
         return await run_in_threadpool(
             editable_file_task_service.submit_psd,

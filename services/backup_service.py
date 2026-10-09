@@ -643,6 +643,16 @@ class BackupService:
                     "snapshots/auth_keys.json",
                     _json_bytes(config.get_storage_backend().load_auth_keys()),
                 )
+            # Quota and unfinished work must travel together, independently of log/image options.
+            if (DATA_DIR / "generation-runtime.sqlite").exists():
+                import tempfile
+                from services.generation_runtime import get_generation_runtime
+                runtime = get_generation_runtime()
+                with runtime._lock, tempfile.TemporaryDirectory(prefix="media2api-runtime-backup-") as temporary:
+                    snapshot = Path(temporary) / "generation-runtime.sqlite"
+                    runtime.store.snapshot(snapshot)
+                    self._add_file_to_archive(archive, snapshot, "data/generation-runtime.sqlite")
+                    self._add_directory_to_archive(archive, DATA_DIR / "generation-tasks", "data/generation-tasks")
             if include.get("images"):
                 self._add_file_to_archive(archive, TAGS_FILE, "data/image_tags.json")
                 self._add_directory_to_archive(archive, config.images_dir, "data/images")

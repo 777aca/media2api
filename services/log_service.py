@@ -206,7 +206,8 @@ def _protocol_error_response(exc: Exception, status_code: int, sse: str) -> JSON
     from services.codex_text_service import CodexTextError
     from services.image_resolution import ImageSizeError
 
-    if isinstance(exc, (CodexTextError, ImageSizeError)):
+    from services.generation_errors import GenerationRuntimeError
+    if isinstance(exc, (CodexTextError, ImageSizeError, GenerationRuntimeError)):
         status_code = exc.status_code
         if sse != "anthropic":
             return JSONResponse(status_code=status_code, content=exc.to_openai_error())
@@ -233,35 +234,50 @@ class LoggedCall:
     request_text: str = ""
     request_shape: dict[str, int] | None = None
     request_params: dict[str, object] | None = None
+    idempotency_key: str = ""
+    image_task_id: str = ""
 
     def __post_init__(self) -> None:
         if self.request_params is not None:
             self.request_params = sanitize_request_parameters(self.request_params)
 
+    def _task_response(self, response):
+        if self.image_task_id:
+            response.headers["X-Image-Task-Id"] = self.image_task_id
+        return response
+
     async def run(self, handler, *args, sse: str = "openai"):
         from services.protocol.conversation import ImageGenerationError
 
+        from services.generation_context import GenerationContext
+        from services.generation_protocol import is_governed_image_call, prepare_image_call
+        context = None
         try:
+            if args and isinstance(args[0], dict) and is_governed_image_call(self.endpoint, args[0]):
+                context = GenerationContext(self.identity, self.endpoint, self.idempotency_key)
+                await run_in_threadpool(prepare_image_call, handler, args[0], context)
+                self.image_task_id = context.task_id
+                args = ({**args[0], "_image_context": context}, *args[1:])
             result = await run_in_threadpool(handler, *args)
         except ImageGenerationError as exc:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""),
                      conversation_id=getattr(exc, "conversation_id", ""), error_code=exc.code,
                      upstream_status=exc.upstream_status)
-            return _image_error_response(exc)
+            return self._task_response(_image_error_response(exc))
         except HTTPException as exc:
             self.log("调用失败", status="failed", error=str(exc.detail))
             raise
         except Exception as exc:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""))
             if self.endpoint.startswith("/v1/images"):
-                return _image_error_response(exc)
-            return _protocol_error_response(exc, 502, sse)
+                return self._task_response(_image_error_response(exc))
+            return self._task_response(_protocol_error_response(exc, 502, sse))
 
         if isinstance(result, dict):
             self.log("调用完成", result)
             response = dict(result)
             response.pop("_account_email", None)
-            return response
+            return JSONResponse(content=response, headers={"X-Image-Task-Id": context.task_id}) if context else response
 
         sender = anthropic_sse_stream if sse == "anthropic" else sse_json_stream
         try:
@@ -270,27 +286,30 @@ class LoggedCall:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""),
                      conversation_id=getattr(exc, "conversation_id", ""), error_code=exc.code,
                      upstream_status=exc.upstream_status)
-            return _image_error_response(exc)
+            return self._task_response(_image_error_response(exc))
         except HTTPException as exc:
             self.log("调用失败", status="failed", error=str(exc.detail))
             raise
         except Exception as exc:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""))
             if self.endpoint.startswith("/v1/images"):
-                return _image_error_response(exc)
-            return _protocol_error_response(exc, 502, sse)
+                return self._task_response(_image_error_response(exc))
+            return self._task_response(_protocol_error_response(exc, 502, sse))
         if not has_first:
             self.log("流式调用结束")
-            return StreamingResponse(sender(()), media_type="text/event-stream")
-        return StreamingResponse(sender(self.stream(itertools.chain([first], result))), media_type="text/event-stream")
+            return StreamingResponse(sender(()), media_type="text/event-stream", headers={"X-Image-Task-Id": context.task_id} if context else None)
+        return StreamingResponse(sender(self.stream(itertools.chain([first], result))), media_type="text/event-stream", headers={"X-Image-Task-Id": context.task_id} if context else None)
 
     def stream(self, items):
         urls: list[str] = []
         account_emails: list[str] = []
         conversation_ids: list[str] = []
         failed = False
+        response_id = ""
         try:
             for item in items:
+                if isinstance(item, dict) and isinstance(item.get("response"), dict):
+                    response_id = str(item["response"].get("id") or response_id)
                 urls.extend(_collect_urls(item))
                 account_emails.extend(_collect_account_emails(item))
                 conversation_ids.extend(_collect_conversation_ids(item))
@@ -311,6 +330,10 @@ class LoggedCall:
                 from services.protocol.conversation import ImageGenerationError, public_image_error_message
 
                 raise ImageGenerationError(public_image_error_message(str(exc))) from exc
+            if self.endpoint == "/v1/responses" and self.image_task_id:
+                detail = exc.to_openai_error()["error"] if hasattr(exc, "to_openai_error") else {"code": "image_generation_failed", "message": "生图失败"}
+                yield {"type": "response.failed", "response": {"id": response_id, "object": "response", "status": "failed", "model": self.model, "error": detail, "output": []}}
+                return
             raise
         finally:
             if not failed:
@@ -331,6 +354,8 @@ class LoggedCall:
             "duration_ms": int((time.time() - self.started) * 1000),
             "status": status,
         }
+        if self.image_task_id:
+            detail["image_task_id"] = self.image_task_id
         request_excerpt = _request_excerpt(self.request_text)
         if request_excerpt:
             detail["request_text"] = request_excerpt

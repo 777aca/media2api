@@ -221,20 +221,27 @@ class CodexImageTransportTests(unittest.TestCase):
 
 
 class WebImage25PoolRecoveryTests(unittest.TestCase):
+    @staticmethod
+    def submitted_failure(failure):
+        from services.generation_context import checkpoint
+        checkpoint("submitting")
+        raise failure
+
     def test_timeout_is_submitted_once_and_settled_once_without_legacy_logs(self) -> None:
         failure = RuntimeError("private-token read timeout")
         failure.code = 28
         request = conversation.ConversationRequest(model="gpt-image-2.5-flare", prompt="draw")
-        with mock.patch.object(conversation.account_service, "get_available_access_token", return_value="private-token") as select, \
+        with mock.patch.object(conversation.account_service, "acquire_governed_image_token", return_value="private-token") as select, \
                 mock.patch.object(conversation.account_service, "get_account", return_value={"pool_account_id": "account-id"}), \
                 mock.patch.object(conversation.account_service, "mark_image_result") as mark, \
                 mock.patch.object(conversation.account_service, "release_image_slot") as release, \
-                mock.patch.object(conversation, "stream_image_outputs", side_effect=failure) as generate, \
+                mock.patch.object(conversation, "stream_image_outputs", side_effect=lambda *_args: self.submitted_failure(failure)) as generate, \
                 mock.patch.object(conversation, "OpenAIBackendAPI") as factory, \
                 mock.patch.object(conversation, "logger") as log:
             with self.assertRaises(conversation.ImageGenerationError):
                 list(conversation.stream_image_outputs_with_pool(request))
-        select.assert_called_once_with()
+        select.assert_called_once()
+        self.assertEqual(select.call_args.kwargs["channel"], "web")
         generate.assert_called_once()
         mark.assert_called_once_with("private-token", False)
         release.assert_not_called()
@@ -245,8 +252,8 @@ class WebImage25PoolRecoveryTests(unittest.TestCase):
         failure = RuntimeError("private-token TLS handshake failed")
         failure.code = 35
         request = conversation.ConversationRequest(model="gpt-image-2.5-sunburst", prompt="draw")
-        with mock.patch.object(conversation.account_service, "get_available_access_token", return_value="private-token"), \
-                mock.patch.object(conversation.account_service, "get_account", return_value={"pool_account_id": "account-id"}), \
+        with mock.patch.object(conversation.account_service, "acquire_governed_image_token", return_value="private-token"), \
+                mock.patch.object(conversation.account_service, "get_account", side_effect=[{"pool_account_id": "account-one"}, {"pool_account_id": "account-two"}]), \
                 mock.patch.object(conversation.account_service, "mark_image_result") as mark, \
                 mock.patch.object(conversation, "stream_image_outputs", side_effect=[failure, [conversation.ImageOutput(kind="result", model=request.model, index=1, total=1, data=[{"b64_json": encoded_image()}])]]) as generate, \
                 mock.patch.object(conversation, "OpenAIBackendAPI"), \

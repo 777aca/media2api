@@ -232,6 +232,7 @@ def image_result_content(result: dict[str, Any]) -> str:
 def image_chat_response(body: dict[str, Any]) -> dict[str, Any]:
     model, prompt, n, images = chat_image_args(body)
     result = collect_image_outputs(stream_image_outputs_with_pool(ConversationRequest(
+        generation_context=body.get("_image_context"),
         prompt=prompt,
         model=model,
         n=n,
@@ -251,6 +252,7 @@ def image_chat_response(body: dict[str, Any]) -> dict[str, Any]:
 def image_chat_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
     model, prompt, n, images = chat_image_args(body)
     image_outputs = stream_image_outputs_with_pool(ConversationRequest(
+        generation_context=body.get("_image_context"),
         prompt=prompt,
         model=model,
         n=n,

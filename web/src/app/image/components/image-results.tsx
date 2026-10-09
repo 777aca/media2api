@@ -24,6 +24,7 @@ type ImageResultsProps = {
   onReuseTurnConfig: (conversationId: string, turnId: string) => void | Promise<void>;
   onRegenerateTurn: (conversationId: string, turnId: string) => void | Promise<void>;
   onRetryImage: (conversationId: string, turnId: string, imageId: string) => void | Promise<void>;
+  onCancelTask: (taskId: string) => void | Promise<void>;
   onTimeoutRetryContinue: (taskId: string) => void | Promise<void>;
   onDismissErrors: (conversationId: string, turnId: string) => void | Promise<void>;
   formatConversationTime: (value: string) => string;
@@ -95,6 +96,7 @@ export function ImageResults({
   onRegenerateTurn,
   onRetryImage,
   onTimeoutRetryContinue,
+  onCancelTask,
   onDismissErrors,
   formatConversationTime,
 }: ImageResultsProps) {
@@ -326,7 +328,7 @@ export function ImageResults({
                               <p className="font-medium">图片 {index + 1}/{turn.images.length}</p>
                               <span className="line-clamp-2 sm:line-clamp-none">{image.error || "生成失败"}</span>
                               <div className="flex items-center gap-2">
-                                {isTimeoutError && (
+                                {(isTimeoutError || (image.resultUncertain && image.canRecover)) && (
                                   <button
                                     type="button"
                                     onClick={() => void onTimeoutRetryContinue(image.taskId!)}
@@ -337,10 +339,11 @@ export function ImageResults({
                                 )}
                                 <button
                                   type="button"
+                                  disabled={image.resultUncertain}
                                   onClick={() => void onRetryImage(selectedConversation.id, turn.id, image.id)}
                                   className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-rose-600 shadow-sm transition hover:bg-rose-100 sm:px-3 sm:text-xs"
                                 >
-                                  重新生成这一张
+                                  {image.resultUncertain ? "等待结果确认" : "重新生成这一张"}
                                 </button>
                               </div>
                             </div>
@@ -357,7 +360,7 @@ export function ImageResults({
                       }
 
                       const imageTaskStatus = image.taskStatus || (turn.status === "queued" ? "queued" : "running");
-                      const imageStatusLabel = imageTaskStatus === "queued" ? "排队中" : getProgressLabel(image.progress);
+                      const imageStatusLabel = image.progress === "recovering_result" ? "正在恢复原任务结果" : imageTaskStatus === "queued" ? `排队中${image.queueSeconds != null ? ` · 已等待 ${Math.floor(image.queueSeconds)} 秒` : ""}` : getProgressLabel(image.progress);
                       const showElapsed = imageTaskStatus === "running" && image.elapsedSecs != null;
                       const elapsedDisplay = showElapsed
                         ? formatElapsed(
@@ -389,6 +392,7 @@ export function ImageResults({
                             <p className="text-[11px] font-medium leading-4 sm:text-sm">
                               图片 {index + 1}/{turn.images.length}
                             </p>
+                            {imageTaskStatus === "queued" && image.progress !== "recovering_result" && image.taskId && <Button size="sm" variant="outline" onClick={() => void onCancelTask(image.taskId!)}>取消排队</Button>}
                             <p className="text-[10px] leading-4 text-stone-400 sm:text-xs">
                               {imageStatusLabel}
                             </p>
@@ -458,6 +462,14 @@ function getTurnStatusLabel(status: ImageTurnStatus) {
 }
 
 const PROGRESS_LABELS: Record<string, string> = {
+  preparing: "准备生图",
+  account_selected: "准备提交",
+  submitting: "提交生图",
+  submitted: "等待上游结果",
+  polling: "读取原任务结果",
+  raw_saved: "保存及后处理",
+  output_saved: "结算图片",
+  recovering_result: "恢复原任务结果",
   getting_account: "确认可用账号",
   uploading: "上传图片",
   bootstrapping: "预热首页",

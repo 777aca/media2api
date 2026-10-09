@@ -18,7 +18,7 @@ import api.system as system_module
 import services.config as config_module
 import services.image_service as image_module
 from services.image_storage_service import ImageStorageService
-from services.image_task_service import ImageTaskService
+from test.legacy_image_task_fixture import ImageTaskService
 
 
 class ImageRetentionTests(unittest.TestCase):
@@ -160,7 +160,7 @@ class ImageRetentionTests(unittest.TestCase):
             "data": [{"url": "http://example.test/expired.png"}],
         }]}), encoding="utf-8")
         self.config.update({"image_retention_hours": 1})
-        with mock.patch("services.image_task_service.config", self.config):
+        with mock.patch("test.legacy_image_task_fixture.config", self.config):
             for _ in range(2):
                 service = ImageTaskService(tasks)
                 result = service.list_tasks({"id": "owner", "role": "admin"}, ["old-task"])

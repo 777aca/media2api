@@ -35,6 +35,20 @@ function formatDateTime(value?: string | null) {
   }).format(date);
 }
 
+function parseLimit(value: string, minimum: number) {
+  if (!value.trim()) return null;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < minimum || (minimum === 1 && number > 64)) throw new Error(minimum === 1 ? "并发请填写 1 至 64 的整数" : "额度请填写非负整数");
+  return number;
+}
+
+function KeyLimits({ quota, concurrency, setQuota, setConcurrency }: { quota: string; concurrency: string; setQuota: (value: string) => void; setConcurrency: (value: string) => void }) {
+  return <div className="grid gap-4 sm:grid-cols-2">
+    <label className="space-y-2 text-sm"><span>累计成功图片额度</span><Input type="number" min={0} step={1} placeholder="不限额" value={quota} onChange={(event) => setQuota(event.target.value)} /><span className="block text-xs text-muted-foreground">留空不限额，0 表示不可新增任务。</span></label>
+    <label className="space-y-2 text-sm"><span>调用 Key 并发</span><Input type="number" min={1} max={64} step={1} placeholder="使用默认值" value={concurrency} onChange={(event) => setConcurrency(event.target.value)} /><span className="block text-xs text-muted-foreground">此 Key 同时处理的图片数；留空使用生图调度默认值，初始为 4。</span></label>
+  </div>;
+}
+
 export function UserKeysCard() {
   const didLoadRef = useRef(false);
   const [items, setItems] = useState<UserKey[]>([]);
@@ -48,6 +62,10 @@ export function UserKeysCard() {
   const [editingItem, setEditingItem] = useState<UserKey | null>(null);
   const [editName, setEditName] = useState("");
   const [editKey, setEditKey] = useState("");
+  const [quota, setQuota] = useState("");
+  const [concurrency, setConcurrency] = useState("");
+  const [editQuota, setEditQuota] = useState("");
+  const [editConcurrency, setEditConcurrency] = useState("");
 
   const load = async () => {
     setIsLoading(true);
@@ -72,7 +90,7 @@ export function UserKeysCard() {
   const handleCreate = async () => {
     setIsCreating(true);
     try {
-      const data = await createUserKey(name.trim());
+      const data = await createUserKey(name.trim(), { image_quota_limit: parseLimit(quota, 0), image_concurrency_limit: parseLimit(concurrency, 1) });
       setItems(data.items);
       setRevealedKey(data.key);
       setName("");
@@ -130,6 +148,8 @@ export function UserKeysCard() {
 
   const openEditDialog = (item: UserKey) => {
     setEditingItem(item);
+    setEditQuota(item.image_quota_limit == null ? "" : String(item.image_quota_limit));
+    setEditConcurrency(item.image_concurrency_limit == null ? "" : String(item.image_concurrency_limit));
     setEditName(item.name);
     setEditKey("");
   };
@@ -141,20 +161,18 @@ export function UserKeysCard() {
     const item = editingItem;
     const trimmedName = editName.trim();
     const trimmedKey = editKey.trim();
-    if (trimmedName === item.name && !trimmedKey) {
-      setEditingItem(null);
-      return;
-    }
     setItemPending(item.id, true);
     try {
       const data = await updateUserKey(item.id, {
+        image_quota_limit: parseLimit(editQuota, 0),
+        image_concurrency_limit: parseLimit(editConcurrency, 1),
         ...(trimmedName !== item.name ? { name: trimmedName } : {}),
         ...(trimmedKey ? { key: trimmedKey } : {}),
       });
       setItems(data.items);
       setEditingItem(null);
       setEditKey("");
-      toast.success(trimmedKey ? "用户密钥已更新" : "用户名称已更新");
+      toast.success(trimmedKey ? "用户密钥已更新" : "用户密钥配置已更新");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "更新用户密钥失败");
     } finally {
@@ -233,6 +251,8 @@ export function UserKeysCard() {
                       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
                         <span>创建时间 {formatDateTime(item.created_at)}</span>
                         <span>最近使用 {formatDateTime(item.last_used_at)}</span>
+                        <span>已用 {item.image_quota_used ?? 0} · 预占 {item.image_quota_reserved ?? 0} · 剩余 {item.image_quota_remaining ?? "不限"} 张</span>
+                        <span>并发 {item.image_concurrency_limit ?? "默认"}</span>
                       </div>
                     </div>
 
@@ -299,6 +319,7 @@ export function UserKeysCard() {
               className="h-11 rounded-xl border-stone-200 bg-white"
             />
           </div>
+          <KeyLimits quota={quota} concurrency={concurrency} setQuota={setQuota} setConcurrency={setConcurrency} />
           <DialogFooter>
             <Button
               type="button"
@@ -392,6 +413,8 @@ export function UserKeysCard() {
               </p>
             </div>
           </div>
+          <KeyLimits quota={editQuota} concurrency={editConcurrency} setQuota={setEditQuota} setConcurrency={setEditConcurrency} />
+          <p className="text-xs text-muted-foreground">更换密钥保留额度记录；上限不得低于已用与预占之和。</p>
           <DialogFooter>
             <Button
               type="button"

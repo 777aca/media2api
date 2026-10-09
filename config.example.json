@@ -103,11 +103,12 @@
   "image_settle_secs": 2,
   "auto_relogin_after_refresh": false,
   "image_timeout_retry_secs": 30,
-  "third_party_apps": {
-    "infinite_canvas": {
-      "enabled": true,
-      "url": "https://canvas.best"
-    }
-  },
-  "image_remove_conversation_after_result": true
+  "image_remove_conversation_after_result": true,
+  "image_queue": {
+    "global_concurrency": 8,
+    "key_concurrency": 4,
+    "max_waiting_images": 200,
+    "queue_timeout_seconds": 600,
+    "task_retention_days": 30
+  }
 }

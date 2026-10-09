@@ -13,7 +13,8 @@ from services.log_service import LoggedCall
 
 
 class ImageGenerationTaskRequest(BaseModel):
-    client_task_id: str = Field(..., min_length=1)
+    client_task_id: str = Field(..., min_length=1, max_length=256)
+    client_task_ids: list[str] = Field(default_factory=list, max_length=16)
     prompt: str = Field(..., min_length=1)
     model: str = "gpt-image-2"
     size: str | None = None
@@ -32,6 +33,8 @@ async def filter_or_log(call: LoggedCall, text: str) -> None:
     try:
         await run_in_threadpool(check_request, text)
     except HTTPException as exc:
+        from services.generation_protocol import record_image_rejection
+        record_image_rejection(call.identity, call.endpoint, call.request_params or {"model": call.model}, exc)
         call.log("调用失败", status="failed", error=str(exc.detail))
         raise
 
@@ -63,6 +66,7 @@ def create_router() -> APIRouter:
                 identity,
                 request_params=call.request_params,
                 client_task_id=body.client_task_id,
+                client_task_ids=body.client_task_ids,
                 prompt=body.prompt,
                 model=body.model,
                 size=body.size,
@@ -100,6 +104,7 @@ def create_router() -> APIRouter:
                 identity,
                 request_params=call.request_params,
                 client_task_id=client_task_id,
+                client_task_ids=payload.get("client_task_ids"),
                 prompt=prompt,
                 model=model,
                 size=payload["size"],

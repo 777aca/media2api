@@ -15,7 +15,7 @@ from starlette.datastructures import Headers, UploadFile
 import api.ai as ai
 import api.image_tasks as image_tasks
 from services.editable_file_task_service import EditableFileTaskService
-from services.image_task_service import ImageTaskService
+from test.legacy_image_task_fixture import ImageTaskService
 from services.log_service import LoggedCall, LogService
 from services.request_log import MAX_TOTAL_CHARS, REDACTED, TRUNCATED, sanitize_request_parameters
 
@@ -77,7 +77,12 @@ class RequestLoggingTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.logs = LogService(self.root / "logs.jsonl")
-        for module in ("services.log_service", "services.image_task_service", "services.editable_file_task_service"):
+        # These tests stub the whole protocol handler; queue admission is covered
+        # with real protocol parsers in test_generation_api instead.
+        admission = mock.patch("services.generation_protocol.prepare_image_call")
+        admission.start()
+        self.addCleanup(admission.stop)
+        for module in ("services.log_service", "test.legacy_image_task_fixture", "services.editable_file_task_service"):
             patch = mock.patch(f"{module}.log_service", self.logs)
             patch.start()
             self.addCleanup(patch.stop)
@@ -226,7 +231,7 @@ class RequestLoggingTests(unittest.TestCase):
                                     return_value={"data": [{"url": "http://example.test/output.png"}]})
                 service = ImageTaskService(self.root / f"tasks-{failure}.json", edit_handler=handler)
                 params = {"prompt": "original\ntext", "quality": "high", "api_key": "private-secret"}
-                with mock.patch("services.image_task_service.threading.Thread") as thread:
+                with mock.patch("test.legacy_image_task_fixture.threading.Thread") as thread:
                     service.submit_edit(IDENTITY, client_task_id="edit", prompt="original\ntext", model="gpt-image-2",
                                         size=None, images=[(b"private-image", "image.png", "image/png")], request_params=params)
                 params["prompt"] = "mutated"

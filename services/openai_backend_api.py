@@ -24,6 +24,7 @@ from services.account_service import account_service
 from services.codex_client import codex_headers, get_codex_client_version
 from services.config import config
 from services.proxy_service import proxy_settings
+from services.generation_context import checkpoint
 from utils.helper import WEB_IMAGE_MODELS_25, UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uuid, split_image_model
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
@@ -855,6 +856,7 @@ class OpenAIBackendAPI:
                 if key.lower() != "authorization"
             },
         })
+        checkpoint("submitting")
         try:
             with urllib.request.urlopen(request, timeout=1200) as raw:
                 yield from self._iter_codex_response_events(raw)
@@ -1044,6 +1046,7 @@ class OpenAIBackendAPI:
         if thinking_effort:
             payload["thinking_effort"] = thinking_effort
         path = "/backend-api/f/conversation"
+        checkpoint("submitting")
         response = self.session.post(
             self.base_url + path,
             headers=self._image_headers(path, requirements, conduit_token, "text/event-stream"),

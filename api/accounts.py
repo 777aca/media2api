@@ -38,9 +38,13 @@ from services.sub2api_service import (
 
 class UserKeyCreateRequest(BaseModel):
     name: str = ""
+    image_quota_limit: int | None = Field(default=None, strict=True, ge=0)
+    image_concurrency_limit: int | None = Field(default=None, strict=True, ge=1, le=64)
 
 
 class UserKeyUpdateRequest(BaseModel):
+    image_quota_limit: int | None = Field(default=None, strict=True, ge=0)
+    image_concurrency_limit: int | None = Field(default=None, strict=True, ge=1, le=64)
     name: str | None = None
     enabled: bool | None = None
     key: str | None = None
@@ -172,7 +176,7 @@ def create_router() -> APIRouter:
     async def create_user_key(body: UserKeyCreateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         try:
-            item, raw_key = auth_service.create_key(role="user", name=body.name)
+            item, raw_key = auth_service.create_key(role="user", name=body.name, image_quota_limit=body.image_quota_limit, image_concurrency_limit=body.image_concurrency_limit)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         return {"item": item, "key": raw_key, "items": auth_service.list_keys(role="user")}
@@ -184,15 +188,7 @@ def create_router() -> APIRouter:
             authorization: str | None = Header(default=None),
     ):
         require_admin(authorization)
-        updates = {
-            key: value
-            for key, value in {
-                "name": body.name,
-                "enabled": body.enabled,
-                "key": body.key,
-            }.items()
-            if value is not None
-        }
+        updates = body.model_dump(exclude_unset=True)
         if not updates:
             raise HTTPException(status_code=400, detail={"error": "还没有检测到改动，请修改后再保存"})
         try:

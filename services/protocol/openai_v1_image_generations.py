@@ -22,6 +22,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     base_url = str(body.get("base_url") or "") or None
     progress_callback = body.get("progress_callback")
     outputs = stream_image_outputs_with_pool(ConversationRequest(
+        generation_context=body.get("_image_context"),
         prompt=prompt,
         model=model,
         n=n,

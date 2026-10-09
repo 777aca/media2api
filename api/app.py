@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from api import accounts, ai, image_tasks, system, updates
+from api import accounts, ai, image_tasks, system, updates, generation_runtime
 from api.errors import install_exception_handlers
 from api.support import resolve_web_asset, start_limited_account_watcher
 from services.backup_service import backup_service
@@ -20,6 +20,9 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        from services.generation_runtime import get_generation_runtime
+        runtime = get_generation_runtime()
+        runtime.start()
         stop_event = Event()
         thread = start_limited_account_watcher(stop_event)
         cleanup_thread = start_image_cleanup_scheduler(stop_event)
@@ -32,6 +35,8 @@ def create_app() -> FastAPI:
             thread.join(timeout=1)
             cleanup_thread.join(timeout=1)
             backup_service.stop()
+            from fastapi.concurrency import run_in_threadpool
+            await run_in_threadpool(runtime.stop)
 
     app = FastAPI(title="media2api", version=app_version, lifespan=lifespan)
     install_exception_handlers(app)
@@ -41,7 +46,9 @@ def create_app() -> FastAPI:
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Image-Task-Id"],
     )
+    app.include_router(generation_runtime.create_router())
     app.include_router(ai.create_router())
     app.include_router(accounts.create_router())
     app.include_router(image_tasks.create_router())

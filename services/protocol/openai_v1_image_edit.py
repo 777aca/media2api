@@ -82,6 +82,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     if not encoded_images:
         raise ImageGenerationError("image is required")
     outputs = stream_image_outputs_with_pool(ConversationRequest(
+        generation_context=body.get("_image_context"),
         prompt=prompt,
         model=model,
         n=n,

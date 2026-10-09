@@ -20,6 +20,9 @@ export type StoredImage = ImageProcessingMetadata & {
   status?: "loading" | "success" | "error";
   taskStatus?: "queued" | "running";
   progress?: string;
+  resultUncertain?: boolean;
+  canRecover?: boolean;
+  queueSeconds?: number;
   b64_json?: string;
   url?: string;
   revised_prompt?: string;

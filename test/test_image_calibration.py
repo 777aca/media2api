@@ -15,7 +15,7 @@ from PIL import Image
 from services.config import config
 from services.image_calibration import calibrate_image, calibration_mode, worker_ready
 from services.image_resolution import DEFAULT_CALIBRATION, ImageSizeError, calibration_settings, validate_image_size
-from services.image_task_service import ImageTaskService
+from test.legacy_image_task_fixture import ImageTaskService
 from services.protocol import conversation
 from services.super_resolution_worker import create_worker
 from utils.image_tokens import count_image_output_items_tokens
@@ -139,7 +139,7 @@ class ImageCalibrationTests(unittest.TestCase):
             backend._poll_image_results.return_value = (["synthetic-file"], [])
             backend.resolve_conversation_image_urls.return_value = ["http://test/image"]
             backend.download_image_bytes.return_value = [png((1024, 768))]
-            with mock.patch("services.openai_backend_api.OpenAIBackendAPI", return_value=backend) as create_backend, mock.patch("services.image_task_service.account_service.list_accounts", return_value=[{"pool_account_id": "pool-original", "access_token": "test-token"}]), mock.patch.object(config, "get_image_calibration_settings", return_value=self.settings), mock.patch.object(conversation, "save_image_bytes", return_value="http://test/saved"), mock.patch.object(service, "_log_call"):
+            with mock.patch("services.openai_backend_api.OpenAIBackendAPI", return_value=backend) as create_backend, mock.patch("test.legacy_image_task_fixture.account_service.list_accounts", return_value=[{"pool_account_id": "pool-original", "access_token": "test-token"}]), mock.patch.object(config, "get_image_calibration_settings", return_value=self.settings), mock.patch.object(conversation, "save_image_bytes", return_value="http://test/saved"), mock.patch.object(service, "_log_call"):
                 service._run_resume_poll(key, "synthetic-conversation", 30, {"id": "test", "role": "admin"}, "generate", "gpt-image-2")
             create_backend.assert_called_once_with(access_token="test-token")
             output = service._tasks[key]

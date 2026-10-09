@@ -932,6 +932,81 @@ class AccountService:
         with self._lock:
             return list(self._accounts)
 
+    def _reserve_image_candidate_locked(self, candidates: list[dict]) -> str:
+        selected = self._scheduler.select(candidates, group="image")
+        token = selected["access_token"]
+        self._image_inflight[token] = int(self._image_inflight.get(token, 0)) + 1
+        return token
+
+    def try_acquire_image_token(self, *, model: str, channel: str, excluded_ids: set[str], preferred_id: str = "") -> str | None:
+        """Reserve immediately; busy/cooling accounts stay in the durable scheduler's queue."""
+        from services.generation_errors import GenerationRuntimeError
+        from utils.helper import split_image_model, is_web_image_model_25
+        plan, _ = split_image_model(model)
+        with self._image_slot_condition:
+            candidates = []
+            has_matching_account = False
+            for item in self._accounts.values():
+                account_id = str(item.get("pool_account_id") or "")
+                if account_id in excluded_ids or (preferred_id and account_id != preferred_id):
+                    continue
+                if preferred_id:
+                    # Recovery reads an already submitted request, it does not consume another upstream generation.
+                    eligible = item.get("status") != "禁用"
+                    has_matching_account = has_matching_account or eligible
+                else:
+                    eligible = self._is_image_account_available(item)
+                    if not is_web_image_model_25(model):
+                        eligible = eligible and self._account_matches_plan_type(item, plan)
+                        if channel == "codex":
+                            eligible = eligible and self._account_matches_source_type(item, "codex") and (bool(plan) or self._account_matches_any_plan_type(item, ("plus", "team", "pro")))
+                    has_matching_account = has_matching_account or eligible
+                    blocks = item.get("image_blocks") or {}
+                    for key in (channel, f"{channel}:{model}"):
+                        block = blocks.get(key) or {}
+                        if block and (block.get("until") is None or float(block.get("until") or 0) > time.time()):
+                            eligible = False
+                if eligible and int(self._image_inflight.get(item["access_token"], 0)) < max(1, int(config.image_account_concurrency or 1)):
+                    candidates.append(item)
+            if candidates:
+                return self._reserve_image_candidate_locked(candidates)
+            if not has_matching_account:
+                raise GenerationRuntimeError("没有可用的生图账号或上游额度", "image_account_unavailable", 429)
+            return None
+
+    def acquire_governed_image_token(self, *, model: str, channel: str, excluded_ids: set[str], deadline: float, preferred_id: str = "") -> str:
+        """Compatibility for internal callers; this adapter never creates another wait loop."""
+        from services.generation_errors import GenerationRuntimeError
+        token = self.try_acquire_image_token(model=model, channel=channel, excluded_ids=excluded_ids, preferred_id=preferred_id)
+        if token is None:
+            raise GenerationRuntimeError("生图账号暂忙，请通过生图队列提交", "image_account_busy", 429)
+        return token
+
+    def record_image_failure(self, token: str, model: str, channel: str, failure) -> None:
+        import time
+        with self._image_slot_condition:
+            token = self._resolve_access_token_locked(token)
+            item = self._accounts.get(token)
+            if not item:
+                return
+            if failure.category == "credentials_invalid":
+                item["status"] = "异常"
+            elif failure.cooldown_seconds or failure.category == "model_permission":
+                blocks = dict(item.get("image_blocks") or {})
+                scope = f"{channel}:{model}" if failure.scope == "model" else channel
+                blocks[scope] = {"reason": failure.category, "until": time.time() + failure.cooldown_seconds if failure.cooldown_seconds else None}
+                item["image_blocks"] = blocks
+            if failure.category == "transient":
+                item["image_consecutive_failures"] = int(item.get("image_consecutive_failures") or 0) + 1
+            self._save_accounts()
+            self._image_slot_condition.notify_all()
+
+    def clear_image_blocks(self, token: str) -> dict | None:
+        item = self.update_account(token, {"image_blocks": {}, "image_consecutive_failures": 0}, quiet=True)
+        with self._image_slot_condition:
+            self._image_slot_condition.notify_all()
+        return item
+
     def _list_ready_candidate_tokens(
             self,
             excluded_tokens: set[str] | None = None,
@@ -972,20 +1047,14 @@ class AccountService:
             source_type: str | None = None,
             plan_types: set[str] | tuple[str, ...] | None = None,
     ) -> str:
+        from services.generation_errors import GenerationRuntimeError
         with self._image_slot_condition:
-            while True:
-                if not self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types):
-                    raise RuntimeError(
-                        f"no available {plan_type or source_type or ''} image quota".replace("  ", " ").strip()
-                        if plan_type or source_type else "no available image quota"
-                    )
-                tokens = self._list_available_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)
-                if tokens:
-                    selected = self._scheduler.select([self._accounts[token] for token in tokens], group="image")
-                    access_token = selected["access_token"]
-                    self._image_inflight[access_token] = int(self._image_inflight.get(access_token, 0)) + 1
-                    return access_token
-                self._image_slot_condition.wait(timeout=1.0)
+            if not self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types):
+                raise RuntimeError(f"no available {plan_type or source_type or ''} image quota".replace("  ", " "))
+            tokens = self._list_available_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)
+            if tokens:
+                return self._reserve_image_candidate_locked([self._accounts[token] for token in tokens])
+            raise GenerationRuntimeError("生图账号暂忙，请通过生图队列提交", "image_account_busy", 429)
 
     def release_image_slot(self, access_token: str) -> None:
         if not access_token:
@@ -1372,10 +1441,11 @@ class AccountService:
                 return False
         return True
 
-    def mark_image_result(self, access_token: str, success: bool) -> dict | None:
+    def mark_image_result(self, access_token: str, success: bool, *, release_slot: bool = True) -> dict | None:
         if not access_token:
             return None
-        self.release_image_slot(access_token)
+        if release_slot:
+            self.release_image_slot(access_token)
         with self._lock:
             access_token = self._resolve_access_token_locked(access_token)
             current = self._accounts.get(access_token)
