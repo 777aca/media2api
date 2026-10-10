@@ -87,6 +87,12 @@ docker compose -f docker-compose.yml -f docker-compose.super-resolution.yml up -
 
 Worker 使用 ONNX Runtime CPU、默认 2 个计算线程、单并发和最多 8 个等待请求。输入/输出各不超过 64 MiB，输入不超过 8,294,400 像素，分块 256、重叠 16，默认总超时 300 秒。客户端超时可能先于底层当前分块结束，Worker 保持占用推理槽，避免超时请求叠加占用内存。可以用 `SUPER_RESOLUTION_THREADS`（1～32）和 `SUPER_RESOLUTION_TIMEOUT`（1～600）调整运行参数。
 
+等待请求在取得推理名额之前不读取图片正文，排队时间计入总超时；主 API 在等待期间也不解码原图。即使客户端多次取消，推理名额仍保持到已开始的本地推理结束。
+
+主 API 通过 `x-super-resolution-size: WIDTHxHEIGHT` 请求头传入目标框，尺寸沿用上述规则。Worker 逐块推理并按统一缩放坐标合成目标画布，不创建整张 4 倍中间图片，也不将整张输入转为 float32。最终尺寸、等比缩放和透明通道规则保持一致。未携带该头时保留 4 倍输出协议，但输出总像素限制为 40,000,000，在整图解码和画布分配前拒绝过大的无目标请求。
+
+升级时应同时更新主 API 与 Worker，才能启用目标画布合成。旧 Worker 忽略目标头时，主 API 仍接受合法的 4 倍结果；超过 40,000,000 像素的旧输出在解码前回退原图。
+
 排障先检查 `/health/ready`（带 `x-super-resolution-secret` 请求头）与 Worker 日志。应用日志记录校准方式、源/目标尺寸、耗时和失败类别，不记录图片字节或密钥。关闭后台总开关即可立即停止新请求的校准，不影响原有生图通道。
 
 ## 验证
@@ -94,7 +100,7 @@ Worker 使用 ONNX Runtime CPU、默认 2 个计算线程、单并发和最多 8
 普通隔离回归不需要模型，不连接真实服务：
 
 ```powershell
-.venv\Scripts\python.exe scripts\run_model_catalog_tests.py test.test_image_calibration
+.venv\Scripts\python.exe scripts\run_model_catalog_tests.py test.test_image_calibration test.test_super_resolution_memory
 ```
 
 真实模型验收仅使用合成渐变图，验证 2K/4K、透明度和分块接缝，不调用生图上游：

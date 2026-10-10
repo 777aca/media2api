@@ -24,7 +24,7 @@ def runtime_statistics(runtime, *, days: int = 1, model: str = "", channel: str 
             parameters.append(value)
             reject_filters.append(f"{column}=?")
             reject_parameters.append(value)
-    rows = store.rows("SELECT t.*,j.model,j.channel,COALESCE(s.images,0) AS images FROM tasks t JOIN jobs j ON j.id=t.job_id LEFT JOIN settlements s ON s.task_id=t.id WHERE " + " AND ".join(filters), parameters)
+    rows = store.rows("SELECT t.job_id,t.status,t.error_category,t.started,t.created,t.finished,t.recovery,COALESCE(s.images,0) AS images FROM tasks t JOIN jobs j ON j.id=t.job_id LEFT JOIN settlements s ON s.task_id=t.id WHERE " + " AND ".join(filters), parameters)
     rejected = store.rows("SELECT * FROM rejections WHERE " + " AND ".join(reject_filters), reject_parameters)
     counts = Counter(row["status"] for row in rows)
     categories = Counter(row["error_category"] for row in rows if row["status"] == "error")

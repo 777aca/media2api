@@ -11,7 +11,7 @@ import unittest
 from unittest import mock
 
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, ImageOps
 
 from services.image_calibration import calibrate_image
 from services.image_resolution import DEFAULT_CALIBRATION
@@ -39,6 +39,18 @@ class RealSuperResolutionTests(unittest.TestCase):
         engine = Upscaler(Path(os.environ["MEDIA2API_TEST_SR_MODEL"]))
         with TestClient(create_worker(upscaler=engine, secret="local-test")) as client:
             response = client.post("/v1/super-resolution", content=source, headers={"x-super-resolution-secret": "local-test"})
+            for size in ["2048x1152", "3840x2160"]:
+                targeted = client.post("/v1/super-resolution", content=source,
+                                       headers={"x-super-resolution-secret": "local-test", "x-super-resolution-size": size})
+                self.assertEqual(targeted.status_code, 200, targeted.text if targeted.status_code != 200 else "")
+                with Image.open(io.BytesIO(targeted.content)) as result, Image.open(io.BytesIO(response.content)) as full:
+                    self.assertEqual(result.size, tuple(map(int, size.split("x"))))
+                    self.assertEqual(result.getchannel("A").getextrema(), (0, 255))
+                    with ImageOps.contain(full, result.size, Image.Resampling.LANCZOS) as reference:
+                        difference = np.abs(np.asarray(result.convert("RGB"), dtype=np.int16) - np.asarray(reference.convert("RGB"), dtype=np.int16))
+                        self.assertLess(float(difference.mean()), .1)
+                        self.assertLessEqual(int(difference.max()), 2)
+                (output_dir / f"synthetic-tiled-{size}.png").write_bytes(targeted.content)
         self.assertEqual(response.status_code, 200, response.text if response.status_code != 200 else "")
         with Image.open(io.BytesIO(response.content)) as result:
             self.assertEqual(result.size, (2048, 1152))
@@ -53,4 +65,4 @@ class RealSuperResolutionTests(unittest.TestCase):
             self.assertEqual(result.metadata["actual_size"], size)
             self.assertEqual(result.metadata["processing"], "super_resolution")
             (output_dir / f"synthetic-{size}.png").write_bytes(result.data)
-        print(f"Real ONNX model inference and 2K/4K calibration: {time.monotonic()-started:.2f}s; tiles/alpha verified")
+        print(f"Real ONNX model inference and 2K/4K calibration: {time.monotonic()-started:.2f}s; target canvas/tiles/alpha verified")

@@ -13,10 +13,21 @@ from services.generation_errors import GenerationRuntimeError
 
 TERMINAL = {"success", "error", "cancelled"}
 ACTIVE = {"queued", "running", "uncertain"}
+_TASK_METADATA = ",".join(f"t.{column}" for column in (
+    "id", "job_id", "ordinal", "owner", "status", "phase", "created", "started", "finished", "updated",
+    "account_id", "conversation_id", "attempt", "recovery", "error_category", "error_code", "error",
+    "http_status", "reservation", "attempted_accounts", "recovery_attempts", "recovery_started",
+    "recovery_deadline", "recovery_next_at",
+))
 
 
 def dump(value) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def image_metadata(outputs: list) -> list[dict]:
+    return [{key: value for key, value in image.items() if key != "b64_json"}
+            for output in outputs for image in output.get("data", [])]
 
 
 class GenerationStore:
@@ -49,6 +60,9 @@ class GenerationStore:
                 UNIQUE(job_id,ordinal)
             );
             CREATE INDEX IF NOT EXISTS task_dispatch ON tasks(status,owner,created,ordinal);
+            CREATE TABLE IF NOT EXISTS task_output_metadata (
+                task_id TEXT PRIMARY KEY REFERENCES tasks(id), data TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS settlements (
                 task_id TEXT PRIMARY KEY, owner TEXT NOT NULL, images INTEGER NOT NULL, released INTEGER NOT NULL,
                 outcome TEXT NOT NULL, created REAL NOT NULL
@@ -148,11 +162,47 @@ class GenerationStore:
             self.db.execute("INSERT INTO rejections(owner,model,channel,category,code,created) VALUES (?,?,?,?,?,?)",
                             (identity.get("id"), model, channel, category, code, time.time()))
 
-    def task(self, task_id: str) -> dict:
-        rows = self.rows("SELECT t.*,j.payload,j.identity,j.endpoint,j.model,j.channel,j.deadline FROM tasks t JOIN jobs j ON j.id=t.job_id WHERE t.id=?", (task_id,))
+    def task(self, task_id: str, *, include_output: bool = True) -> dict:
+        columns = _TASK_METADATA + (",t.output" if include_output else "")
+        rows = self.rows(f"SELECT {columns},j.payload,j.identity,j.endpoint,j.model,j.channel,j.deadline FROM tasks t JOIN jobs j ON j.id=t.job_id WHERE t.id=?", (task_id,))
         if not rows:
             raise KeyError(task_id)
         return rows[0]
+
+    def save_output_metadata(self, task_id: str, outputs: list) -> None:
+        with self.lock:
+            self.db.execute("INSERT INTO task_output_metadata(task_id,data) VALUES (?,?) "
+                            "ON CONFLICT(task_id) DO UPDATE SET data=excluded.data",
+                            (task_id, dump(image_metadata(outputs))))
+
+    def public_tasks(self, job_id: str) -> list[dict]:
+        with self.lock:
+            # Upgrade old results lazily, one body at a time. A separate table avoids
+            # rewriting all Base64 overflow pages just to add a small preview.
+            missing = self.db.execute(
+                "SELECT t.id FROM tasks t LEFT JOIN task_output_metadata m ON m.task_id=t.id "
+                "WHERE t.job_id=? AND t.status IN ('success','error','cancelled') AND m.task_id IS NULL", (job_id,),
+            ).fetchall()
+            for row in missing:
+                body = self.db.execute("SELECT output FROM tasks WHERE id=?", (row["id"],)).fetchone()[0]
+                self.save_output_metadata(row["id"], json.loads(body or "[]"))
+                del body
+            return self.rows(f"SELECT {_TASK_METADATA},m.data AS image_data FROM tasks t "
+                             "LEFT JOIN task_output_metadata m ON m.task_id=t.id WHERE t.job_id=? ORDER BY t.ordinal", (job_id,))
+
+    def output(self, task_id: str) -> list | None:
+        with self.lock:
+            row = self.db.execute("SELECT output FROM tasks WHERE id=?", (task_id,)).fetchone()
+            return json.loads(row[0]) if row and row[0] is not None else None
+
+    def expire_outputs(self, job_id: str, cutoff: float) -> bool:
+        with self.transaction() as db:
+            if db.execute("SELECT 1 FROM tasks WHERE job_id=? AND (status IN ('queued','running','uncertain') "
+                          "OR COALESCE(finished,updated)>=?) LIMIT 1", (job_id, cutoff)).fetchone():
+                return False
+            self.public_tasks(job_id)
+            db.execute("UPDATE tasks SET output=NULL WHERE job_id=? AND output IS NOT NULL", (job_id,))
+        return True
 
     def checkpoint(self, task_id: str, phase: str | None = None, **values) -> None:
         allowed = {"account_id", "conversation_id", "attempt", "attempted_accounts", "recovery", "error_category", "error_code", "error", "http_status"}
@@ -202,6 +252,7 @@ class GenerationStore:
             db.execute("UPDATE key_usage SET used=used+?,reserved=reserved-? WHERE owner=?", (count, reserved, task["owner"]))
             db.execute("UPDATE tasks SET status=?,phase=?,finished=?,updated=?,output=?,reservation=0,error_category=?,error_code=?,error=?,http_status=?,recovery_next_at=NULL,recovery=COALESCE(?,CASE WHEN recovery='' THEN '' ELSE 'completed' END) WHERE id=?",
                        (status, status, now, now, dump(outputs), category, code, error, http_status, recovery_status, task_id))
+            self.save_output_metadata(task_id, outputs)
             db.execute("INSERT INTO events(task_id,phase,category,attempt,outcome,created) VALUES (?,?,?,?,?,?)",
                        (task_id, task["phase"], category, task["attempt"], status, now))
         return outputs

@@ -31,6 +31,16 @@
 
 `data/generation-runtime.sqlite` 保存请求、图片任务、额度预占、唯一结算流水和统计事件。参考图、合成蒙版、已取得原图与结果检查点放在 `data/generation-tasks/<内部任务 ID>/`；该目录没有公开下载路由。最终图片继续使用已有图片存储配置。
 
+### 结果读取与内存
+
+运行统计仅查询状态、时间和结算张数，不读取图片结果正文。任务列表从 `task_output_metadata` 读取 URL、提示词和校准信息，摘要不含 Base64；兼容 API 真正交付结果时才逐个读取子任务正文，轮询不会重复读取已交付的图片。
+
+升级时自动创建摘要表，保留旧库。旧结果在首次列出或清理时逐条补齐摘要，每次只解析一个子任务，不批量载入全部历史正文；后续刷新直接复用摘要。新结果的摘要与结束状态、额度结算在同一事务保存。
+
+所有子任务结束并超过 `task_retention_days`（至少 30 天）后，定期清理私有任务目录及 SQLite 中的结果正文。运行中、自动恢复中或刚结束的任务继续保留。任务、结果摘要、事件、Key 已用额度和结算流水保留，图片 URL 是否仍可下载由原图片存储及图片保留策略决定。过期结果的兼容 API 重放返回 HTTP 410 `image_result_expired`，不会重新生图或再次扣额。
+
+清理后 SQLite 空闲页可供后续写入复用，数据库文件不会立即缩小；正常维护不自动执行全库 `VACUUM`。
+
 ## 错误处理与恢复
 
 错误优先按 HTTP 状态及结构化错误码分类，文本仅作为补充：
@@ -117,7 +127,7 @@
 
 首次启用只读导入 `data/image_tasks.json`，不会覆盖原文件。旧成功记录不补扣额度、不进入新统计；无法恢复的旧未完成任务保留“服务已重启，未完成的图片任务已中断”说明。导入标识保存在运行数据库，重复启动不会重复迁移。
 
-旧 JSON 任务执行器已从生产代码移除，`services/image_task_service.py` 只保留统一队列入口。原行为保存在测试夹具中用于历史兼容回归。运行数据库自动补充 `attempted_accounts` 和自动恢复次数、时间字段，保留已有任务和额度流水。
+旧 JSON 任务执行器已从生产代码移除，`services/image_task_service.py` 只保留统一队列入口。原行为保存在测试夹具中用于历史兼容回归。运行数据库自动补充 `attempted_accounts` 和自动恢复次数、时间字段，并创建结果摘要表，保留已有任务和额度流水。
 
 运行数据库存在时，备份总是通过 SQLite Backup API 生成一致性快照，同时包含私有任务目录，与日志/图片备份开关无关。原有账号及 Key 快照继续按配置保存。需要恢复已完成图片时，应开启原有图片备份，或确保远程图片存储仍可读取。
 
@@ -134,7 +144,7 @@
 后端使用隔离目录、示例配置和出站网络拦截：
 
 ```powershell
-.venv\Scripts\python.exe scripts\run_model_catalog_tests.py test.test_generation_runtime test.test_generation_api test.test_generation_recovery test.test_generation_automatic_recovery
+.venv\Scripts\python.exe scripts\run_model_catalog_tests.py test.test_generation_runtime test.test_generation_api test.test_generation_recovery test.test_generation_automatic_recovery test.test_generation_memory
 ```
 
 新增用例覆盖 8/4/200 边界、Key 公平性、原子预占、多图部分成功、额外图片、重复结算、Key 轮换和删除、断连、各检查点重启、迁移只读、恢复快照及同步/流式接口。原图回退沿用图片校准测试。前端运行 `bun test src`、独立 `bunx tsc --noEmit`、相关 ESLint 和 `bun run build`。故障注入使用合成数据，不调用真实上游。

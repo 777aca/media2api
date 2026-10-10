@@ -4,12 +4,13 @@ from __future__ import annotations
 import io
 import os
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 
 from curl_cffi import requests
 from PIL import Image, ImageOps
 
-from services.image_resolution import parse_dimensions
+from services.image_resolution import contained_dimensions, parse_dimensions
 from utils.log import logger
 
 MAX_BODY_BYTES = 64 * 1024 * 1024
@@ -47,13 +48,14 @@ def worker_ready(settings: dict[str, object]) -> dict[str, object]:
         return {"ok": False, "message": "无法连接超分服务，请检查地址、鉴权和模型"}
 
 
-def super_resolve(data: bytes, settings: dict[str, object]) -> bytes:
+def super_resolve(data: bytes, settings: dict[str, object], *, target_size: tuple[int, int] | None = None) -> bytes:
     if len(data) > MAX_BODY_BYTES:
         raise ValueError("image_too_large")
     with requests.Session(trust_env=False) as session:
         response = session.post(
             f"{settings['worker_url']}/v1/super-resolution", data=data,
-            headers={**_headers(), "Content-Type": "application/octet-stream", "x-super-resolution-timeout": str(settings["timeout_secs"])},
+            headers={**_headers(), "Content-Type": "application/octet-stream", "x-super-resolution-timeout": str(settings["timeout_secs"]),
+                     **({"x-super-resolution-size": f"{target_size[0]}x{target_size[1]}"} if target_size else {})},
             timeout=int(settings["timeout_secs"]), allow_redirects=False, stream=True,
         )
         try:
@@ -74,33 +76,51 @@ def calibrate_image(data: bytes, requested_size: str | None, settings: dict[str,
     started = time.monotonic()
     mode = "none"
     try:
-        with Image.open(io.BytesIO(data)) as opened:
-            # Metadata only on the disabled path; never re-encode upstream bytes.
-            actual = opened.size
-            metadata.update(source_size=f"{actual[0]}x{actual[1]}", actual_size=f"{actual[0]}x{actual[1]}")
-            target = parse_dimensions(requested_size)
-            mode = calibration_mode(actual, target) if settings["enabled"] else "none"
-            if mode == "none" or target is None:
-                return CalibratedImage(data, metadata)
-            if len(data) > MAX_BODY_BYTES or actual[0] * actual[1] > MAX_DECODE_PIXELS:
-                raise ValueError("image_too_large")
-            source = ImageOps.exif_transpose(opened).convert("RGBA" if "A" in opened.getbands() or "transparency" in opened.info else "RGB")
-        if mode == "super_resolution":
-            upscaled = super_resolve(data, settings)
-            with Image.open(io.BytesIO(upscaled)) as output:
-                if output.size != (source.width * 4, source.height * 4):
-                    raise ValueError("invalid_worker_dimensions")
-                enhanced = output.convert("RGB")
-            if source.mode == "RGBA":
-                enhanced.putalpha(source.getchannel("A").resize(enhanced.size, Image.Resampling.LANCZOS))
-            source = enhanced
-        # Contain allows enlargement, preserves the composition, and never crops.
-        output = ImageOps.contain(source, target, Image.Resampling.LANCZOS)
-        buffer = io.BytesIO()
-        output.save(buffer, format="PNG")
-        metadata.update(actual_size=f"{output.width}x{output.height}", processing=mode, processing_status="applied")
-        logger.info({"event": "image_calibration", **metadata, "duration_ms": round((time.monotonic() - started) * 1000)})
-        return CalibratedImage(buffer.getvalue(), metadata)
+        with ExitStack() as images:
+            with Image.open(io.BytesIO(data)) as opened:
+                # Metadata only until the worker returns; waiting requests must
+                # not keep decoded source images resident in the API process.
+                actual = opened.size
+                metadata.update(source_size=f"{actual[0]}x{actual[1]}", actual_size=f"{actual[0]}x{actual[1]}")
+                target = parse_dimensions(requested_size)
+                mode = calibration_mode(actual, target) if settings["enabled"] else "none"
+                if mode == "none" or target is None:
+                    return CalibratedImage(data, metadata)
+                if len(data) > MAX_BODY_BYTES or actual[0] * actual[1] > MAX_DECODE_PIXELS:
+                    raise ValueError("image_too_large")
+                has_alpha = "A" in opened.getbands() or "transparency" in opened.info
+                if mode == "resize":
+                    transposed = images.enter_context(ImageOps.exif_transpose(opened))
+                    source = images.enter_context(transposed.convert("RGBA" if has_alpha else "RGB"))
+            if mode == "super_resolution":
+                upscaled = super_resolve(data, settings, target_size=target)
+                # PNG getexif() can itself load all pixels. Read orientation and
+                # transparency only after the request has left the worker queue.
+                with Image.open(io.BytesIO(data)) as original:
+                    oriented_size = actual[::-1] if original.getexif().get(274) in {5, 6, 7, 8} else actual
+                full_size = (oriented_size[0] * 4, oriented_size[1] * 4)
+                expected_size = contained_dimensions(full_size, target)
+                with Image.open(io.BytesIO(upscaled)) as output:
+                    # Older workers ignore the target header and return full x4.
+                    if output.size not in {full_size, expected_size}:
+                        raise ValueError("invalid_worker_dimensions")
+                    if output.width * output.height > MAX_DECODE_PIXELS:
+                        raise ValueError("worker_output_too_large")
+                    worker_alpha = "A" in output.getbands() or "transparency" in output.info
+                    source = images.enter_context(output.convert("RGBA" if has_alpha and worker_alpha else "RGB"))
+                if has_alpha and not worker_alpha:
+                    with Image.open(io.BytesIO(data)) as original, ExitStack() as originals:
+                        transposed = originals.enter_context(ImageOps.exif_transpose(original))
+                        rgba = transposed if transposed.mode == "RGBA" else originals.enter_context(transposed.convert("RGBA"))
+                        with rgba.getchannel("A") as alpha, alpha.resize(source.size, Image.Resampling.LANCZOS) as resized_alpha:
+                            source.putalpha(resized_alpha)
+            output_size = contained_dimensions(source.size, target)
+            output = source if source.size == output_size else images.enter_context(source.resize(output_size, Image.Resampling.LANCZOS))
+            with io.BytesIO() as buffer:
+                output.save(buffer, format="PNG")
+                metadata.update(actual_size=f"{output.width}x{output.height}", processing=mode, processing_status="applied")
+                logger.info({"event": "image_calibration", **metadata, "duration_ms": round((time.monotonic() - started) * 1000)})
+                return CalibratedImage(buffer.getvalue(), metadata)
     except Exception as exc:
         # A post-processing error must never enter the account retry/settlement path.
         if mode != "none":

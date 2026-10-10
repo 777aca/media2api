@@ -30,5 +30,6 @@ def import_legacy_tasks(store, path: Path) -> None:
             outputs = [{"kind": "result", "data": item.get("data") or []}] if status == "success" else []
             db.execute("INSERT INTO tasks(id,job_id,ordinal,owner,status,phase,created,updated,finished,reservation,output,error) VALUES (?,?,1,?,?,?,?,?,?,0,?,?)",
                        (child_id, job_id, owner, status, status, now, now, now, dump(outputs), error))
+            store.save_output_metadata(child_id, outputs)
         # Commit the marker with imported rows so a crash cannot duplicate history.
         db.execute("INSERT OR IGNORE INTO metadata VALUES('legacy_imported','1')")

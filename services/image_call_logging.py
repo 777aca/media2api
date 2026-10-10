@@ -36,7 +36,8 @@ def runtime_call_details(job_id: str, owner: str) -> dict:
     from services.generation_runtime import get_generation_runtime
 
     rows = get_generation_runtime().store.rows(
-        "SELECT t.*,j.channel,COALESCE((SELECT e.phase FROM events e "
+        "SELECT t.id,t.error_category,t.phase,t.attempt,t.recovery,t.status,t.error_code,"
+        "t.recovery_attempts,t.recovery_deadline,j.channel,COALESCE((SELECT e.phase FROM events e "
         "WHERE e.task_id=t.id AND e.outcome=t.status ORDER BY e.id DESC LIMIT 1),t.phase) AS execution_phase "
         "FROM tasks t JOIN jobs j ON j.id=t.job_id WHERE j.id=? AND j.owner=? ORDER BY t.ordinal",
         (job_id, owner),

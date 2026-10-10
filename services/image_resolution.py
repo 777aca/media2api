@@ -48,6 +48,14 @@ def parse_dimensions(value: object) -> tuple[int, int] | None:
     return (width, height) if width > 0 and height > 0 else None
 
 
+def contained_dimensions(actual: tuple[int, int], target: tuple[int, int]) -> tuple[int, int]:
+    """Pillow's contain geometry, without allocating an image to calculate it."""
+    width, height = actual
+    if width / height > target[0] / target[1]:
+        return target[0], max(1, round(height / width * target[0]))
+    return max(1, round(width / height * target[1])), target[1]
+
+
 def calibration_settings(value: object) -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
     settings = {**DEFAULT_CALIBRATION, **{k: v for k, v in source.items() if k in DEFAULT_CALIBRATION}}

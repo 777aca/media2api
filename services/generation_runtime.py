@@ -318,7 +318,7 @@ class GenerationRuntime:
         return (pool, token) if token else None
 
     def _run(self, task_id: str, account_pool=None, account_token: str = "") -> None:
-        row = self.store.task(task_id)
+        row = self.store.task(task_id, include_output=False)
         row["_account_token"] = account_token
         row["_account_pool"] = account_pool
         checkpoint = ExecutionCheckpoint(
@@ -351,13 +351,13 @@ class GenerationRuntime:
                 self.recovery.finish_failed(task_id, "image_result_recovery_expired", "自动读取原结果已超过 10 分钟")
             else:
                 self.store.finish(task_id, status="success", output=serialized)
-                self._cleanup_conversation(self.store.task(task_id))
+                self._cleanup_conversation(self.store.task(task_id, include_output=False))
         except RetryImage:
             self.store.requeue_attempt(task_id)
         except Exception as exc:
             from services.protocol.conversation import public_image_error_message
             failure = classify_image_error(exc)
-            current = self.store.task(task_id)
+            current = self.store.task(task_id, include_output=False)
             uncertain = getattr(exc, "submission_uncertain", current["phase"] not in {"queued", "preparing", "account_selected", "rejected"})
             message = public_image_error_message(str(exc))
             self.store.finish(task_id, status="uncertain" if uncertain else "error", category=getattr(exc, "failure_category", failure.category),
@@ -374,7 +374,7 @@ class GenerationRuntime:
 
     def _persist_checkpoint(self, task_id: str, **values) -> None:
         if values.get("phase") == "submitting":
-            row = self.store.task(task_id)
+            row = self.store.task(task_id, include_output=False)
             identity = self.identity_resolver(row["owner"])
             if not identity or not identity.get("enabled", True):
                 self.store.finish(task_id, status="cancelled", category="local_rejection", code="image_key_disabled", error="API Key 已禁用或删除", http_status=403)
@@ -407,7 +407,7 @@ class GenerationRuntime:
             from services.log_service import log_service, LOG_TYPE_CALL, sanitize_request_parameters
             from services.image_call_logging import task_diagnostics
             from utils.log import logger
-            row = self.store.task(task_id)
+            row = self.store.task(task_id, include_output=False)
             diagnostics = task_diagnostics(row, phase)
             logger.info({"event": "image_task_status", "image_task_id": row["job_id"], **diagnostics})
             # Compatible API calls are logged once by LoggedCall, including SSE.
@@ -430,14 +430,18 @@ class GenerationRuntime:
         emitted = set()
         last_progress = None
         while True:
-            rows = self.store.rows("SELECT * FROM tasks WHERE job_id=? ORDER BY ordinal", (task_id,))
+            rows = self.store.rows("SELECT id,status,phase,recovery,error,error_code,http_status,conversation_id,account_id FROM tasks WHERE job_id=? ORDER BY ordinal", (task_id,))
             with self._lock:
                 active = set(self._active)
             for row in rows:
                 if row["status"] == "success" and row["id"] not in emitted and row["id"] not in active:
+                    values = self.store.output(row["id"])
+                    if values is None:
+                        raise ImageGenerationError("图片结果正文已超过保留期限", code="image_result_expired", status_code=410)
                     emitted.add(row["id"])
-                    for value in json.loads(row["output"] or "[]"):
+                    for value in values:
                         yield ImageOutput(**value)
+                    del values
             unfinished = [row for row in rows if row["status"] in {"queued", "running", "uncertain"} or row["id"] in active]
             if not unfinished:
                 if not emitted:
@@ -467,13 +471,13 @@ class GenerationRuntime:
         for row in rows:
             client_ids = json.loads(row["payload"]).get("client_task_ids") or []
             if not ids or row["id"] in ids or row["external_id"] in ids or any(key in ids for key in client_ids):
-                item = self.public_job(row)
+                children = self.store.public_tasks(row["id"])
+                item = self.public_job(row, children)
                 if client_ids and not all_users:
-                    children = self.store.rows("SELECT * FROM tasks WHERE job_id=? ORDER BY ordinal", (row["id"],))
                     for index, child in enumerate(children):
                         if ids and client_ids[index] not in ids and row["id"] not in ids:
                             continue
-                        data = [image for output in json.loads(child["output"] or "[]") for image in output.get("data", [])]
+                        data = json.loads(child["image_data"] or "[]")
                         result.append({**item, "id": client_ids[index], "status": child["status"], "phase": child["phase"], "progress": child["phase"],
                                        "data": [{k: v for k, v in image.items() if k != "b64_json"} for image in data], "error": child["error"],
                                        "error_category": child["error_category"], "error_code": child["error_code"], "recovery_status": child["recovery"], "conversation_id": child["conversation_id"],
@@ -486,13 +490,12 @@ class GenerationRuntime:
                     result.append(item)
         return result
 
-    def public_job(self, job: dict) -> dict:
-        rows = self.store.rows("SELECT * FROM tasks WHERE job_id=? ORDER BY ordinal", (job["id"],))
+    def public_job(self, job: dict, rows: list[dict] | None = None) -> dict:
+        rows = rows if rows is not None else self.store.public_tasks(job["id"])
         counts = Counter(row["status"] for row in rows)
         status = next((s for s in ("running", "queued", "uncertain") if counts[s]), "success" if counts["success"] else ("cancelled" if counts["cancelled"] else "error"))
         payload = json.loads(job["payload"])
-        data = [item for row in rows if row["status"] == "success" for output in json.loads(row["output"] or "[]") for item in output.get("data", [])]
-        data = [{key: value for key, value in item.items() if key != "b64_json"} for item in data]
+        data = [item for row in rows if row["status"] == "success" for item in json.loads(row["image_data"] or "[]")]
         current = next((row for row in rows if row["status"] == status), rows[0])
         recovering = [row for row in rows if row["status"] == "uncertain" or (row["status"] in {"queued", "running"} and row["recovery"] == "recovering_result")]
         current = next(iter(recovering), next((row for row in rows if row["recovery_deadline"] is not None or row["recovery"] == "auto_failed"), current))
@@ -522,7 +525,7 @@ class GenerationRuntime:
             for child in job["children"]:
                 if task_id in client_ids and child["ordinal"] != client_ids.index(task_id) + 1:
                     continue
-                row = self.store.task(child["id"])
+                row = self.store.task(child["id"], include_output=False)
                 if action == "cancel" and row["status"] == "queued" and row["recovery"] != "recovering_result":
                     self.store.finish(row["id"], status="cancelled", code="image_task_cancelled", error="任务已取消", http_status=409)
                 elif action == "end" and row["status"] == "uncertain":
@@ -540,8 +543,11 @@ class GenerationRuntime:
     def cleanup(self) -> None:
         import shutil
         cutoff = time.time() - self.settings_getter()["task_retention_days"] * 86400
-        rows = self.store.rows("SELECT id FROM jobs WHERE created<? AND NOT EXISTS (SELECT 1 FROM tasks WHERE job_id=jobs.id AND status IN ('queued','running','uncertain'))", (cutoff,))
+        rows = self.store.rows("SELECT id FROM jobs WHERE created<? AND NOT EXISTS (SELECT 1 FROM tasks WHERE job_id=jobs.id "
+                               "AND (status IN ('queued','running','uncertain') OR COALESCE(finished,updated)>=?))", (cutoff, cutoff))
         for row in rows:
+            if not self.store.expire_outputs(row["id"], cutoff):
+                continue
             directory = self.directory / "generation-tasks" / row["id"]
             if directory.is_dir() and directory.resolve().parent == (self.directory / "generation-tasks").resolve():
                 shutil.rmtree(directory)
