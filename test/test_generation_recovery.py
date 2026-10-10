@@ -95,15 +95,16 @@ class RecoveryTests(unittest.TestCase):
                     runtime.stop()
                     runtime.start()
                     deadline = time.time() + 3
-                    while runtime.jobs(context.identity, [job])[0]["status"] in {"queued", "running"} and time.time() < deadline:
+                    while runtime.jobs(context.identity, [job])[0]["status"] in {"queued", "running", "uncertain"} and time.time() < deadline:
                         time.sleep(.01)
                     result = runtime.jobs(context.identity, [job])[0]
-                    self.assertEqual(result["status"], "uncertain" if phase == "submitting" else "success")
+                    self.assertEqual(result["status"], "error" if phase == "submitting" else "success")
                     self.assertEqual(counts["generation"], 1)
                     self.assertEqual(runtime.store.quota("admin")["image_quota_used"], 0 if phase == "submitting" else 1)
                     if phase == "submitting":
                         self.assertEqual(counts["recovery"], 0)
-                        self.assertEqual(runtime.store.quota("admin")["image_quota_reserved"], 1)
+                        self.assertEqual(runtime.store.quota("admin")["image_quota_reserved"], 0)
+                        self.assertEqual(result["error_code"], "image_result_unrecoverable")
                     self.assertEqual(runtime.submit(request, GenerationContext(context.identity, "test", phase)), job)
                 finally:
                     runtime.stop()

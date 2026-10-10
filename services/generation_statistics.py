@@ -37,19 +37,22 @@ def runtime_statistics(runtime, *, days: int = 1, model: str = "", channel: str 
     samples = counts["success"] + platform_failures
     queues = [max(0, row["started"] - row["created"]) for row in rows if row["started"]]
     durations = [max(0, row["finished"] - row["started"]) for row in rows if row["started"] and row["finished"]]
-    live = store.rows("SELECT owner,status,COUNT(*) AS count FROM tasks WHERE status IN ('running','queued','uncertain') GROUP BY owner,status")
+    live = store.rows("SELECT owner,status,COUNT(*) AS count,SUM(CASE WHEN status='uncertain' OR recovery='recovering_result' THEN 1 ELSE 0 END) AS recovering FROM tasks WHERE status IN ('running','queued','uncertain') GROUP BY owner,status")
     per_key: dict[str, dict] = {}
     for row in live:
-        per_key.setdefault(row["owner"], {"key_id": row["owner"], "running": 0, "queued": 0, "uncertain": 0})[row["status"]] = row["count"]
+        item = per_key.setdefault(row["owner"], {"key_id": row["owner"], "running": 0, "queued": 0, "uncertain": 0, "recovering": 0})
+        item[row["status"]] = row["count"]
+        item["recovering"] += row["recovering"]
     settings = runtime.settings_getter()
     for key, value in per_key.items():
         value["concurrency_limit"] = store.quota(key)["image_concurrency_limit"] or settings["key_concurrency"]
     cooldowns = sum(1 for account in (accounts or []) if any(block.get("until") is not None and block["until"] > time.time() for block in (account.get("image_blocks") or {}).values()))
     return {"enabled_at": float(store.rows("SELECT value FROM metadata WHERE name='enabled_at'")[0]["value"]),
             "live": {"running": sum(row["count"] for row in live if row["status"] == "running"), "queued": sum(row["count"] for row in live if row["status"] == "queued"),
-                     "uncertain": sum(row["count"] for row in live if row["status"] == "uncertain"), "cooldown_accounts": cooldowns, **settings, "keys": list(per_key.values())},
+                     "uncertain": sum(row["count"] for row in live if row["status"] == "uncertain"), "recovering": sum(row["recovering"] for row in live), "cooldown_accounts": cooldowns, **settings, "keys": list(per_key.values())},
             "summary": {"requests": len(jobs) + len(rejected), "successful_images": sum(row["images"] for row in rows),
-                        "successful_tasks": counts["success"], "partial_success": sum(1 for values in jobs.values() if any(row["status"] == "success" for row in values) and any(row["status"] != "success" for row in values) and all(row["status"] not in {"queued", "running"} for row in values)),
+                        "successful_tasks": counts["success"], "partial_success": sum(1 for values in jobs.values() if any(row["status"] == "success" for row in values) and any(row["status"] != "success" for row in values) and all(row["status"] not in {"queued", "running", "uncertain"} for row in values)),
+                        "recovering": sum(1 for row in rows if row["status"] == "uncertain" or (row["status"] in {"queued", "running"} and row["recovery"] == "recovering_result")),
                         "failed": counts["error"], "cancelled": counts["cancelled"], "uncertain": counts["uncertain"], "rejected": len(rejected),
                         "platform_failures": platform_failures, "invalid_request": categories["invalid_request"], "content_rejected": categories["content_rejected"], "local_rejection": categories["local_rejection"],
                         "platform_success_rate": round(counts["success"] / samples, 4) if samples else None,

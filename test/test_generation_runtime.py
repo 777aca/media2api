@@ -242,11 +242,11 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.runtime.store.set_limits("a", {"image_quota_limit": 0})
 
-    def test_submission_uncertainty_keeps_reservation_and_admin_can_end(self):
+    def test_automatic_recovery_wait_keeps_reservation_and_admin_can_end(self):
         calls = []
         def uncertain(request, index, total, row):
             calls.append(row["id"])
-            checkpoint("submitting")
+            checkpoint("submitted", account_id="original", conversation_id="original-handle")
             raise TimeoutError("read timed out")
         self.runtime.execute = uncertain
         job = self.submit()

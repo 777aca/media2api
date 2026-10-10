@@ -25,7 +25,6 @@ type ImageResultsProps = {
   onRegenerateTurn: (conversationId: string, turnId: string) => void | Promise<void>;
   onRetryImage: (conversationId: string, turnId: string, imageId: string) => void | Promise<void>;
   onCancelTask: (taskId: string) => void | Promise<void>;
-  onTimeoutRetryContinue: (taskId: string) => void | Promise<void>;
   onDismissErrors: (conversationId: string, turnId: string) => void | Promise<void>;
   formatConversationTime: (value: string) => string;
 };
@@ -95,7 +94,6 @@ export function ImageResults({
   onReuseTurnConfig,
   onRegenerateTurn,
   onRetryImage,
-  onTimeoutRetryContinue,
   onCancelTask,
   onDismissErrors,
   formatConversationTime,
@@ -310,7 +308,6 @@ export function ImageResults({
                       }
 
                       if (image.status === "error") {
-                        const isTimeoutError = image.error?.includes("超时") && image.taskId;
                         return (
                           <div key={image.id} className="break-inside-avoid">
                             <div
@@ -328,22 +325,13 @@ export function ImageResults({
                               <p className="font-medium">图片 {index + 1}/{turn.images.length}</p>
                               <span className="line-clamp-2 sm:line-clamp-none">{image.error || "生成失败"}</span>
                               <div className="flex items-center gap-2">
-                                {(isTimeoutError || (image.resultUncertain && image.canRecover)) && (
-                                  <button
-                                    type="button"
-                                    onClick={() => void onTimeoutRetryContinue(image.taskId!)}
-                                    className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-medium text-emerald-600 shadow-sm transition hover:bg-emerald-200 sm:px-3 sm:text-xs"
-                                  >
-                                    继续等待
-                                  </button>
-                                )}
                                 <button
                                   type="button"
                                   disabled={image.resultUncertain}
                                   onClick={() => void onRetryImage(selectedConversation.id, turn.id, image.id)}
                                   className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-rose-600 shadow-sm transition hover:bg-rose-100 sm:px-3 sm:text-xs"
                                 >
-                                  {image.resultUncertain ? "等待结果确认" : "重新生成这一张"}
+                                  {image.resultUncertain ? "正在自动恢复结果" : "重新生成这一张"}
                                 </button>
                               </div>
                             </div>
@@ -360,7 +348,7 @@ export function ImageResults({
                       }
 
                       const imageTaskStatus = image.taskStatus || (turn.status === "queued" ? "queued" : "running");
-                      const imageStatusLabel = image.progress === "recovering_result" ? "正在恢复原任务结果" : imageTaskStatus === "queued" ? `排队中${image.queueSeconds != null ? ` · 已等待 ${Math.floor(image.queueSeconds)} 秒` : ""}` : getProgressLabel(image.progress);
+                      const imageStatusLabel = image.progress === "recovering_result" ? image.recoveryMessage || "正在自动恢复原任务结果" : imageTaskStatus === "queued" ? `排队中${image.queueSeconds != null ? ` · 已等待 ${Math.floor(image.queueSeconds)} 秒` : ""}` : getProgressLabel(image.progress);
                       const showElapsed = imageTaskStatus === "running" && image.elapsedSecs != null;
                       const elapsedDisplay = showElapsed
                         ? formatElapsed(

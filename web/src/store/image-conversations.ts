@@ -22,6 +22,7 @@ export type StoredImage = ImageProcessingMetadata & {
   progress?: string;
   resultUncertain?: boolean;
   canRecover?: boolean;
+  recoveryMessage?: string;
   queueSeconds?: number;
   b64_json?: string;
   url?: string;

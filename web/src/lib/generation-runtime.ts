@@ -42,14 +42,19 @@ export function parseStatistics(value: unknown) {
   const live = record(source.live);
   const filters = record(source.filters);
   const summary = record(source.summary);
+  if (live.recovering === undefined) live.recovering = live.uncertain;
+  if (summary.recovering === undefined) summary.recovering = summary.uncertain;
+  requireNumbers(live, ["recovering"]);
+  requireNumbers(summary, ["recovering"]);
   requireNumbers(live, ["running", "queued", "uncertain", "cooldown_accounts", "global_concurrency", "max_waiting_images"]);
   const nullable = ["platform_success_rate", "queue_p50", "queue_p95", "generation_p50", "generation_p95"];
   requireNumbers(summary, ["requests", "successful_images", "partial_success", "failed", "cancelled", "uncertain", "platform_failures", "invalid_request", "content_rejected", "local_rejection", ...nullable], nullable);
   if (typeof summary.platform_success_rate === "number" && summary.platform_success_rate > 1) throw new Error("平台成功率无效");
   const keys = Array.isArray(live.keys) ? live.keys.map((value) => {
     const item = record(value);
+    if (item.recovering === undefined) item.recovering = item.uncertain;
     if (typeof item.key_id !== "string") throw new Error("Key 占用格式不正确");
-    requireNumbers(item, ["running", "queued", "uncertain", "concurrency_limit"]);
+    requireNumbers(item, ["running", "queued", "uncertain", "recovering", "concurrency_limit"]);
     return { key_id: item.key_id, values: numberRecord(item) };
   }) : [];
   return { summary: numberRecord(summary), live: numberRecord(live), keys, models: strings(filters.models), keyIds: strings(filters.keys) };
@@ -83,6 +88,18 @@ export async function endUncertainTask(taskId: string) {
 
 function isImageTask(value: unknown): value is ImageTask {
   if (!value || typeof value !== "object") return false;
+  const source = record(value);
+  for (const field of ["recovery_attempts", "recovery_max_attempts"]) {
+    const item = source[field];
+    if (item !== undefined && (typeof item !== "number" || !Number.isInteger(item) || item < 0)) return false;
+  }
+  for (const field of ["recovery_next_at", "recovery_deadline"]) {
+    const item = source[field];
+    if (item !== undefined && item !== null && (typeof item !== "number" || !Number.isFinite(item) || item < 0)) return false;
+  }
+  for (const field of ["recovery_active", "partial_success"]) {
+    if (source[field] !== undefined && typeof source[field] !== "boolean") return false;
+  }
   return "id" in value && typeof value.id === "string" && "status" in value && typeof value.status === "string" &&
     ["queued", "running", "success", "error", "uncertain", "cancelled"].includes(value.status) &&
     "mode" in value && (value.mode === "generate" || value.mode === "edit") &&
@@ -90,7 +107,7 @@ function isImageTask(value: unknown): value is ImageTask {
     (!("data" in value) || (Array.isArray(value.data) && value.data.every((item: unknown) => !!item && typeof item === "object" && (!("url" in item) || typeof item.url === "string"))));
 }
 
-function parseTasks(value: unknown): ImageTask[] {
+export function parseTasks(value: unknown): ImageTask[] {
   const source = record(value);
   if (!Array.isArray(source.items) || !source.items.every(isImageTask)) throw new Error("图片任务格式不正确");
   return source.items;

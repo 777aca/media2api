@@ -16,6 +16,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from services.config import DATA_DIR
+from services.image_call_logging import collapse_legacy_task_logs, is_legacy_task_log, legacy_call_key
 from services.request_log import sanitize_request_parameters
 from services.protocol.error_response import anthropic_error_response, openai_error_response
 from utils.helper import anthropic_sse_stream, sse_json_stream
@@ -76,12 +77,14 @@ class LogService:
     def list(self, type: str = "", start_date: str = "", end_date: str = "", limit: int = 200) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
-        items: list[dict[str, Any]] = []
         lines = self.path.read_text(encoding="utf-8").splitlines()
+        parsed = []
         for line_number in range(len(lines) - 1, -1, -1):
             item = self._parse_line(lines[line_number], line_number)
-            if item is None:
-                continue
+            if item is not None:
+                parsed.append(item)
+        items: list[dict[str, Any]] = []
+        for item in collapse_legacy_task_logs(parsed):
             if not self._matches_filters(item, type=type, start_date=start_date, end_date=end_date):
                 continue
             items.append(item)
@@ -94,6 +97,12 @@ class LogService:
         if not self.path.exists() or not target_ids:
             return {"removed": 0}
         lines = self.path.read_text(encoding="utf-8").splitlines()
+        # Deleting a visible call must not make its old diagnostic rows reappear.
+        companion_keys = {
+            legacy_call_key(item) for index, line in enumerate(lines)
+            if (item := self._parse_line(line, index)) is not None
+            and item["id"] in target_ids and not is_legacy_task_log(item)
+        } - {None}
         kept_lines: list[str] = []
         removed = 0
         for line_number, raw_line in enumerate(lines):
@@ -101,7 +110,9 @@ class LogService:
             if item is None:
                 kept_lines.append(raw_line)
                 continue
-            if str(item.get("id") or "") in target_ids:
+            if str(item.get("id") or "") in target_ids or (
+                is_legacy_task_log(item) and legacy_call_key(item) in companion_keys
+            ):
                 removed += 1
                 continue
             kept_lines.append(self._serialize_item(item))
@@ -356,6 +367,12 @@ class LoggedCall:
         }
         if self.image_task_id:
             detail["image_task_id"] = self.image_task_id
+            try:
+                from services.image_call_logging import runtime_call_details
+                detail.update(runtime_call_details(self.image_task_id, str(self.identity.get("id") or "")))
+            except Exception:
+                # Diagnostic lookup must not suppress the actual HTTP call log.
+                pass
         request_excerpt = _request_excerpt(self.request_text)
         if request_excerpt:
             detail["request_text"] = request_excerpt

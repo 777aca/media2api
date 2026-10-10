@@ -65,6 +65,10 @@ class GenerationStore:
         columns = {row["name"] for row in self.db.execute("PRAGMA table_info(tasks)")}
         if "attempted_accounts" not in columns:
             self.db.execute("ALTER TABLE tasks ADD COLUMN attempted_accounts TEXT NOT NULL DEFAULT '[]'")
+        for name, definition in {"recovery_attempts": "INTEGER NOT NULL DEFAULT 0", "recovery_started": "REAL",
+                                 "recovery_deadline": "REAL", "recovery_next_at": "REAL"}.items():
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
         self.db.execute("INSERT OR IGNORE INTO metadata VALUES ('enabled_at',?)", (str(time.time()),))
 
     @contextmanager
@@ -164,7 +168,7 @@ class GenerationStore:
             db.execute("INSERT INTO events(task_id,phase,category,attempt,outcome,created) VALUES (?,?,?,?,?,?)",
                        (task_id, phase or row["phase"], values.get("error_category"), values.get("attempt", row["attempt"]), values.get("outcome"), time.time()))
 
-    def finish(self, task_id: str, *, status: str, output: list | None = None, category: str = "", code: str = "", error: str = "", http_status: int = 502) -> list:
+    def finish(self, task_id: str, *, status: str, output: list | None = None, category: str = "", code: str = "", error: str = "", http_status: int = 502, recovery_status: str | None = None) -> list:
         """The terminal state, reservation release and charge are one transaction."""
         now = time.time()
         with self.transaction() as db:
@@ -172,7 +176,7 @@ class GenerationStore:
             if task["status"] in TERMINAL:
                 return json.loads(task["output"] or "[]")
             if status == "uncertain":
-                db.execute("UPDATE tasks SET status='uncertain',recovery='awaiting_confirmation',error_category=?,error_code=?,error=?,http_status=?,updated=? WHERE id=?",
+                db.execute("UPDATE tasks SET status='uncertain',recovery='auto_pending',recovery_next_at=NULL,error_category=?,error_code=?,error=?,http_status=?,updated=? WHERE id=?",
                            (category, code or "image_result_uncertain", error, http_status, now, task_id))
                 return []
             outputs = output or []
@@ -196,15 +200,15 @@ class GenerationStore:
             db.execute("INSERT INTO settlements(task_id,owner,images,released,outcome,created) VALUES (?,?,?,?,?,?)",
                        (task_id, task["owner"], count, reserved, status, now))
             db.execute("UPDATE key_usage SET used=used+?,reserved=reserved-? WHERE owner=?", (count, reserved, task["owner"]))
-            db.execute("UPDATE tasks SET status=?,phase=?,finished=?,updated=?,output=?,reservation=0,error_category=?,error_code=?,error=?,http_status=?,recovery=CASE WHEN recovery='' THEN '' ELSE 'completed' END WHERE id=?",
-                       (status, status, now, now, dump(outputs), category, code, error, http_status, task_id))
+            db.execute("UPDATE tasks SET status=?,phase=?,finished=?,updated=?,output=?,reservation=0,error_category=?,error_code=?,error=?,http_status=?,recovery_next_at=NULL,recovery=COALESCE(?,CASE WHEN recovery='' THEN '' ELSE 'completed' END) WHERE id=?",
+                       (status, status, now, now, dump(outputs), category, code, error, http_status, recovery_status, task_id))
             db.execute("INSERT INTO events(task_id,phase,category,attempt,outcome,created) VALUES (?,?,?,?,?,?)",
                        (task_id, task["phase"], category, task["attempt"], status, now))
         return outputs
 
     def claim(self, task_id: str, *, account_id: str | None = None, attempt: int | None = None) -> bool:
         with self.lock:
-            cursor = self.db.execute("UPDATE tasks SET status='running',phase=CASE WHEN recovery='recovering_result' THEN phase WHEN ? IS NOT NULL THEN 'account_selected' ELSE 'preparing' END,account_id=COALESCE(?,account_id),attempt=COALESCE(?,attempt),started=COALESCE(started,?),updated=? WHERE id=? AND status='queued'", (account_id, account_id, attempt, time.time(), time.time(), task_id))
+            cursor = self.db.execute("UPDATE tasks SET status='running',phase=CASE WHEN recovery='recovering_result' THEN phase WHEN ? IS NOT NULL THEN 'account_selected' ELSE 'preparing' END,account_id=COALESCE(?,account_id),attempt=COALESCE(?,attempt),recovery_attempts=recovery_attempts+CASE WHEN recovery='recovering_result' THEN 1 ELSE 0 END,recovery_next_at=NULL,started=COALESCE(started,?),updated=? WHERE id=? AND status='queued'", (account_id, account_id, attempt, time.time(), time.time(), task_id))
             return cursor.rowcount == 1
 
     def requeue_attempt(self, task_id: str) -> None:
@@ -220,9 +224,9 @@ class GenerationStore:
             elif phase in {"raw_saved", "output_saved"} or row["conversation_id"]:
                 status, recovery = "queued", "recovering_result"
             else:
-                status, recovery = "uncertain", "awaiting_confirmation"
+                status, recovery = "uncertain", "auto_pending"
             with self.lock:
-                self.db.execute("UPDATE tasks SET status=?,recovery=?,updated=?,error=CASE WHEN ?='uncertain' THEN '上游提交结果待确认，禁止自动重发' ELSE error END WHERE id=?", (status, recovery, time.time(), status, row["id"]))
+                self.db.execute("UPDATE tasks SET status=?,recovery=?,updated=?,error=CASE WHEN ?='uncertain' THEN '上游结果未取回，系统将自动处理；不会重新生图' ELSE error END WHERE id=?", (status, recovery, time.time(), status, row["id"]))
 
     def snapshot(self, target: Path) -> None:
         with self.lock, closing(sqlite3.connect(target)) as destination:

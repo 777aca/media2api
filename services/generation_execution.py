@@ -32,7 +32,7 @@ def execute_image(request, index: int, total: int, row: dict):
             data = format_image_result(row["raw_images"], request.prompt, request.response_format, request.base_url,
                                        requested_size=request.size, progress_callback=request.progress_callback)["data"]
             return [ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=row.get("conversation_id") or "")]
-        while len(attempted) < 3:
+        while recovering or len(attempted) < 3:
             try:
                 token = row["_account_token"] if managed else account_service.acquire_governed_image_token(model=request.model, channel=channel, excluded_ids=attempted, deadline=deadline, preferred_id=preferred)
             except Exception as exc:
@@ -57,8 +57,12 @@ def execute_image(request, index: int, total: int, row: dict):
                             if not conversation_id or channel != "web":
                                 raise ImageGenerationError("提交结果待确认，无法查询原请求", code="image_result_uncertain")
                             checkpoint("polling", conversation_id=conversation_id)
-                            urls = backend.resolve_conversation_image_urls(conversation_id, [], [], poll_timeout_secs=120)
+                            timeout = min(120, max(1, int((row.get("recovery_deadline") or time.time() + 120) - time.time())))
+                            urls = backend.resolve_conversation_image_urls(conversation_id, [], [], poll_timeout_secs=timeout)
                             items = [{"b64_json": base64.b64encode(data).decode("ascii")} for data in backend.download_image_bytes(urls)]
+                            if items:
+                                from services.generation_context import save_raw_images
+                                save_raw_images(items)
                             data = format_image_result(items, request.prompt, request.response_format, request.base_url,
                                                        requested_size=request.size, progress_callback=request.progress_callback)["data"]
                             if not data:

@@ -285,6 +285,12 @@ export type ImageTask = {
   task_id?: string;
   phase?: string;
   recovery_status?: string;
+  recovery_active?: boolean;
+  recovery_attempts?: number;
+  recovery_max_attempts?: number;
+  recovery_next_at?: number | null;
+  recovery_deadline?: number | null;
+  partial_success?: boolean;
   queue_seconds?: number;
   error_category?: string;
   id: string;

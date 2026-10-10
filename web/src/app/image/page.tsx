@@ -21,7 +21,6 @@ import {
   fetchAccounts,
   fetchModels,
   fetchImageTasks,
-  resumeImagePoll,
   type Account,
   type ImageModel,
   type Model,
@@ -47,6 +46,8 @@ import {
 } from "@/store/image-conversations";
 
 import { IMAGE_SIZE_PRESETS, imageSizeError, parseImageProcessing } from "@/lib/image-resolution";
+import { normalizeImageQuality } from "@/lib/image-quality";
+import { isAutomaticImageRecovery, imageRecoveryMessage } from "@/lib/image-recovery";
 
 const ACTIVE_CONVERSATION_STORAGE_KEY = "media2api:image_active_conversation_id";
 const IMAGE_RATIO_STORAGE_KEY = "media2api:image_last_ratio";
@@ -227,20 +228,28 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
       revised_prompt: first.revised_prompt,
       ...parseImageProcessing(first),
       error: undefined,
+      resultUncertain: false,
+      canRecover: false,
       durationMs: task.duration_ms,
     };
   }
 
-  if (task.status === "error" || task.status === "cancelled" || task.status === "uncertain") {
+  if (isAutomaticImageRecovery(task)) {
+    return { ...image, taskId: task.id, status: "loading", taskStatus: "running", progress: "recovering_result",
+      error: undefined, resultUncertain: true, canRecover: false, recoveryMessage: imageRecoveryMessage(task),
+      elapsedSecs: task.elapsed_secs, elapsedUpdatedAt: Date.now() };
+  }
+
+  if (task.status === "error" || task.status === "cancelled") {
     return {
       ...image,
       taskId: task.id,
       status: "error",
       taskStatus: undefined,
       progress: undefined,
-      error: task.status === "uncertain" ? "结果待确认，已保留额度预占。可恢复原任务，或由管理员结束。" : (task.error || (task.status === "cancelled" ? "已取消" : "生成失败")),
-      resultUncertain: task.status === "uncertain",
-      canRecover: Boolean(task.conversation_id || task.phase === "raw_saved" || task.phase === "output_saved"),
+      error: task.error || (task.status === "cancelled" ? "已取消" : "生成失败"),
+      resultUncertain: false,
+      canRecover: false,
       durationMs: task.duration_ms,
     };
   }
@@ -465,7 +474,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const scrollRestoreGenerationRef = useRef(0);
 
   const config = useSettingsStore((state) => state.config);
-  const imageTimeoutRetrySecs = Number(config?.image_timeout_retry_secs || 30);
 
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageCount, setImageCount] = useState("3");
@@ -475,6 +483,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const [imageHeight, setImageHeight] = useState("1024");
   const [imageQuality, setImageQuality] = useState("auto");
   const [imageModel, setImageModel] = useState<ImageModel>("gpt-image-2");
+  const qualityForModel = normalizeImageQuality(imageModel, imageQuality);
   const [imageModels, setImageModels] = useState<ImageModel[]>(["gpt-image-2"]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
@@ -494,11 +503,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     | { type: "all" }
     | null
   >(null);
-  const [timeoutRetry, setTimeoutRetry] = useState<{
-    conversationId: string;
-    taskId: string;
-    taskError: string;
-  } | null>(null);
 
   const parsedCount = useMemo(() => Number(clampImageCount(imageCount)), [imageCount]);
   const selectedConversation = useMemo(
@@ -615,6 +619,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_TIER_STORAGE_KEY) : null;
       const storedQuality =
         typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_QUALITY_STORAGE_KEY) : null;
+      const storedModel =
+        typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_MODEL_STORAGE_KEY) : null;
       const storedCount =
         typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_COUNT_STORAGE_KEY) : null;
       setImageRatio(storedRatio || "1:1");
@@ -622,7 +628,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       const preset = IMAGE_SIZE_PRESETS.find((item) => item.ratio === (storedRatio || "1:1") && item.tier === (storedTier || "1k"));
       setImageWidth(preset?.width || window.localStorage.getItem("media2api:image_last_width") || "1024");
       setImageHeight(preset?.height || window.localStorage.getItem("media2api:image_last_height") || "1024");
-      setImageQuality(storedQuality || "auto");
+      setImageModel(storedModel || "gpt-image-2");
+      setImageQuality(normalizeImageQuality(storedModel || "gpt-image-2", storedQuality));
       setImageCount(storedCount ? clampImageCount(storedCount) : "1");
 
       const items = await listImageConversations();
@@ -654,6 +661,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setImageWidth,
     setImageHeight,
     setImageQuality,
+    setImageModel,
     setImageCount,
     setConversations,
     setSelectedConversationId,
@@ -864,13 +872,17 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       return;
     }
 
+    if (isLoadingHistory) {
+      return;
+    }
+
     window.localStorage.setItem(IMAGE_RATIO_STORAGE_KEY, imageRatio);
     window.localStorage.setItem(IMAGE_TIER_STORAGE_KEY, imageTier);
     window.localStorage.setItem("media2api:image_last_width", imageWidth);
     window.localStorage.setItem("media2api:image_last_height", imageHeight);
-    window.localStorage.setItem(IMAGE_QUALITY_STORAGE_KEY, imageQuality);
+    window.localStorage.setItem(IMAGE_QUALITY_STORAGE_KEY, qualityForModel);
     window.localStorage.setItem(IMAGE_MODEL_STORAGE_KEY, imageModel);
-  }, [imageRatio, imageTier, imageWidth, imageHeight, imageQuality, imageModel]);
+  }, [imageRatio, imageTier, imageWidth, imageHeight, qualityForModel, imageModel, isLoadingHistory]);
 
   useEffect(() => {
     if (typeof window !== "undefined" && parsedCount > 0) {
@@ -1158,7 +1170,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     const parsedSize = parseImageSize(turn.size);
     setImageWidth(parsedSize.width);
     setImageHeight(parsedSize.height);
-    setImageQuality(turn.quality);
+    setImageQuality(normalizeImageQuality(turn.model, turn.quality));
     setImageModel(turn.model);
     setReferenceImages(turn.referenceImages);
     setReferenceImageFiles(
@@ -1255,7 +1267,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         }
 
         let consecutiveErrors = 0;
-        const retryingTaskIdsRef = new Set<string>();
         while (true) {
           const latestConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
           const latestTurn = latestConversation?.turns.find((turn) => turn.id === activeTurn.id);
@@ -1272,26 +1283,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             const taskList = await fetchImageTasks(loadingTaskIds);
             consecutiveErrors = 0;
             if (taskList.items.length > 0) {
-              // 检测是否有超时错误且需要显示重试按钮
-              const timeoutTask = taskList.items.find(
-                (task) =>
-                  (task.status === "uncertain" || task.status === "error") &&
-                  task.error?.includes("超时") &&
-                  task.conversation_id &&
-                  !retryingTaskIdsRef.has(task.id),
-              );
-              if (timeoutTask && timeoutTask.conversation_id) {
-                retryingTaskIdsRef.add(timeoutTask.id);
-                setTimeoutRetry({
-                  conversationId: timeoutTask.conversation_id,
-                  taskId: timeoutTask.id,
-                  taskError: timeoutTask.error || "生图超时",
-                });
-                // 应用超时错误到对应图片，显示继续等待按钮
-                await applyTasks([timeoutTask]);
-              } else {
-                await applyTasks(taskList.items);
-              }
+              await applyTasks(taskList.items);
             }
             if (taskList.missing_ids.length > 0 && latestTurn) {
               const missingImages = latestTurn.images.filter(
@@ -1434,72 +1426,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     [runConversationQueue],
   );
 
-  const handleTimeoutRetryContinue = useCallback(async () => {
-    if (!timeoutRetry) return;
-    const { conversationId, taskId } = timeoutRetry;
-    try {
-      await resumeImagePoll(taskId, imageTimeoutRetrySecs);
-      // 将对应图片的状态重置为 loading，并清除错误
-      void updateConversation(conversationId, (current) => {
-        const conversation = current ?? conversationsRef.current.find((c) => c.id === conversationId);
-        if (!conversation) return current!;
-        return {
-          ...conversation,
-          updatedAt: new Date().toISOString(),
-          turns: conversation.turns.map((turn) => {
-            const hasLoading = turn.images.some((image) => image.taskId === taskId);
-            if (!hasLoading) return turn;
-            return {
-              ...turn,
-              status: "generating" as const,
-              error: undefined,
-              images: turn.images.map((image) =>
-                image.taskId === taskId
-                  ? { ...image, status: "loading" as const, error: undefined, taskStatus: "running" as const, startTime: image.startTime || Date.now() }
-                  : image
-              ),
-            };
-          }),
-        };
-      });
-      // 清除重试状态
-      setTimeoutRetry(null);
-      toast.info(`已继续等待 ${imageTimeoutRetrySecs} 秒`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "续轮询失败";
-      toast.error(msg);
-      setTimeoutRetry(null);
-    }
-  }, [timeoutRetry, updateConversation, imageTimeoutRetrySecs]);
-
-  const handleTimeoutRetryCancel = useCallback(() => {
-    if (!timeoutRetry) return;
-    const { conversationId: convId, taskId, taskError } = timeoutRetry;
-    // 将超时错误应用到对应图片
-    void updateConversation(convId, (current) => {
-      const conversation = current ?? conversationsRef.current.find((c) => c.id === convId);
-      if (!conversation) return current!;
-      return {
-        ...conversation,
-        updatedAt: new Date().toISOString(),
-        turns: conversation.turns.map((turn) => {
-          const hasLoading = turn.images.some((image) => image.status === "loading" && image.taskId === taskId);
-          if (!hasLoading) return turn;
-          const images = turn.images.map((image) =>
-            image.taskId === taskId ? { ...image, status: "error" as const, error: taskError } : image,
-          );
-          const derived = deriveTurnStatus({ ...turn, images });
-          return {
-            ...turn,
-            ...derived,
-            images,
-          };
-        }),
-      };
-    });
-    setTimeoutRetry(null);
-    toast.error(taskError);
-  }, [timeoutRetry, updateConversation]);
 
   const handleDismissErrors = useCallback(
     async (conversationId: string, turnId: string) => {
@@ -1570,7 +1496,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       size: imageSize,
       ratio: imageRatio,
       tier: imageTier,
-      quality: imageQuality,
+      quality: qualityForModel,
       images: createLoadingImages(turnId, parsedCount),
       createdAt: now,
       status: "queued",
@@ -1701,7 +1627,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
                 onRegenerateTurn={handleRegenerateTurn}
                 onRetryImage={handleRetryImage}
                 onCancelTask={async (taskId) => { try { await cancelImageTask(taskId); toast.success("已请求取消等待任务"); } catch (error) { toast.error(error instanceof Error ? error.message : "取消失败"); } }}
-                onTimeoutRetryContinue={handleTimeoutRetryContinue}
                 onDismissErrors={handleDismissErrors}
                 formatConversationTime={formatConversationTime}
               />
@@ -1727,7 +1652,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             imageTier={imageTier}
             imageWidth={imageWidth}
             imageHeight={imageHeight}
-            imageQuality={imageQuality}
+            imageQuality={qualityForModel}
             imageModel={imageModel}
             imageModels={imageModels}
             availableQuota={availableQuota}
@@ -1742,7 +1667,10 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             onImageWidthChange={setImageWidth}
             onImageHeightChange={setImageHeight}
             onImageQualityChange={setImageQuality}
-            onImageModelChange={setImageModel}
+            onImageModelChange={(model) => {
+              setImageModel(model);
+              setImageQuality((quality) => normalizeImageQuality(model, quality));
+            }}
             onSubmit={handleSubmit}
             onPickReferenceImage={() => fileInputRef.current?.click()}
             onReferenceImageChange={handleReferenceImageChange}

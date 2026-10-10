@@ -22,6 +22,8 @@ from services.config import config
 from services.generation_context import checkpoint
 from services.generation_errors import GenerationRuntimeError
 from services.generation_runtime import GenerationRuntime, DEFAULT_QUEUE
+from services.log_service import LogService
+from services.request_log import sanitize_request_parameters
 from services.protocol.conversation import ImageOutput
 from services.storage.json_storage import JSONStorageBackend
 
@@ -35,7 +37,9 @@ class GenerationAPITests(unittest.TestCase):
         self.hold = threading.Event()
         self.hold.set()
         self.runtime = GenerationRuntime(self.root, identity_resolver=lambda owner: {"id": "admin", "role": "admin"} if owner == "admin" else self.auth.find_identity(owner), executor=self.execute)
+        self.logs = LogService(self.root / "calls.jsonl")
         self.patches = [mock.patch("services.generation_runtime._runtime", self.runtime),
+                        mock.patch("services.log_service.log_service", self.logs),
                         mock.patch.object(support, "auth_service", self.auth), mock.patch.object(accounts, "auth_service", self.auth),
                         mock.patch.object(ai, "check_request"), mock.patch.object(image_tasks, "check_request")]
         for patch in self.patches:
@@ -104,17 +108,133 @@ class GenerationAPITests(unittest.TestCase):
                 with self.subTest(path=path, streaming=streaming):
                     headers = {**self.admin, "Idempotency-Key": f"repeated-{streaming}"}
                     payload = {**body, "model": "gpt-image-2", "stream": streaming}
+                    before = len(self.logs.list(type="call"))
                     first = self.client.post(path, headers=headers, json=payload)
                     self.assertEqual(first.status_code, 200, first.text)
                     self.assertTrue(first.headers.get("X-Image-Task-Id"))
+                    records = self.logs.list(type="call")
+                    self.assertEqual(len(records), before + 1)
+                    self.assertEqual(records[0]["detail"]["request_params"], sanitize_request_parameters(payload))
+                    self.assertEqual(records[0]["detail"]["image_task_id"], first.headers["X-Image-Task-Id"])
+                    self.assertEqual(records[0]["detail"]["outcome"], "success")
+                    self.assertEqual(records[0]["detail"]["phase"], "output_saved")
                     duplicate = self.client.post(path, headers=headers, json=payload)
                     self.assertEqual(first.headers["X-Image-Task-Id"], duplicate.headers["X-Image-Task-Id"])
+                    self.assertEqual(len(self.logs.path.read_text(encoding="utf-8").splitlines()), before + 2)
                     if streaming:
                         self.assertIn("data:", first.text)
                     else:
                         self.assertIsInstance(first.json(), dict)
         # Protocol-level 'stream' does not change normalized generation content.
         self.assertEqual(len(self.calls), 8)
+
+    def test_retry_diagnostics_stay_inside_one_failed_call(self):
+        from services.generation_errors import RetryImage
+        attempts = []
+
+        def rejected(request, index, total, row):
+            attempts.append(row["id"])
+            if len(attempts) == 1:
+                checkpoint("rejected", attempt=1, error_category="rate_limited")
+                raise RetryImage()
+            checkpoint("account_selected", attempt=2)
+            raise GenerationRuntimeError("合成参数错误", "invalid_image_request", 400)
+
+        self.runtime.execute = rejected
+        response = self.client.post("/v1/images/generations", headers=self.admin, json={"prompt": "draw"})
+        self.assertEqual(response.status_code, 400, response.text)
+        records = self.logs.list(type="call")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(self.logs.path.read_text(encoding="utf-8").splitlines()), 1)
+        detail = records[0]["detail"]
+        self.assertEqual(detail["status"], "failed")
+        self.assertEqual(detail["error_category"], "invalid_request")
+        self.assertEqual(detail["phase"], "account_selected")
+        self.assertEqual(detail["retry_count"], 1)
+        self.assertEqual(detail["outcome"], "error")
+        self.assertEqual(len(attempts), 2)
+
+    def test_multi_image_partial_success_has_one_call_with_all_children(self):
+        original_execute = self.runtime.execute
+
+        def partial(request, index, total, row):
+            if row["ordinal"] == 1:
+                raise GenerationRuntimeError("合成参数错误", "invalid_image_request", 400)
+            return original_execute(request, index, total, row)
+
+        self.runtime.execute = partial
+        response = self.client.post("/v1/images/generations", headers=self.admin, json={"prompt": "draw", "n": 2})
+        self.assertEqual(response.status_code, 200, response.text)
+        records = self.logs.list(type="call")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(self.logs.path.read_text(encoding="utf-8").splitlines()), 1)
+        self.assertCountEqual([task["outcome"] for task in records[0]["detail"]["image_tasks"]], ["success", "error"])
+        self.assertTrue(records[0]["detail"]["urls"])
+
+    def test_web_background_generation_still_records_completion(self):
+        response = self.client.post("/api/image-tasks/generations", headers=self.admin,
+                                    json={"client_task_id": "web-logging", "prompt": "draw"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.wait_for(lambda: len(self.logs.list(type="call")) == 1)
+        detail = self.logs.list(type="call")[0]["detail"]
+        self.assertEqual(detail["endpoint"], "/api/image-tasks/generations")
+        self.assertEqual(detail["status"], "success")
+        self.assertEqual(detail["request_params"]["prompt"], "draw")
+
+    def test_unqueryable_submission_automatically_finishes_with_one_call_log(self):
+        def interrupted(request, index, total, row):
+            self.calls.append(row["id"])
+            checkpoint("submitting")
+            raise TimeoutError("synthetic submission timeout")
+
+        self.runtime.execute = interrupted
+        response = self.client.post("/v1/images/generations", headers=self.admin, json={"prompt": "draw"})
+        self.assertEqual(response.status_code, 502, response.text)
+        records = self.logs.list(type="call")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(self.logs.path.read_text(encoding="utf-8").splitlines()), 1)
+        detail = records[0]["detail"]
+        self.assertEqual(detail["status"], "failed")
+        self.assertEqual(detail["phase"], "submitting")
+        self.assertEqual(detail["outcome"], "error")
+        self.assertEqual(detail["recovery_status"], "auto_failed")
+        self.assertEqual(detail["error_code"], "image_result_unrecoverable")
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.runtime.store.quota("admin")["image_quota_reserved"], 0)
+
+    def test_all_image_protocols_wait_for_automatic_recovery_without_resubmitting(self):
+        original_execute = self.runtime.execute
+        submitted, recovered = [], []
+
+        def interrupted(request, index, total, row):
+            if row["recovery"] != "recovering_result":
+                submitted.append(row["id"])
+                checkpoint("submitted", account_id="original", conversation_id="original-handle")
+                raise TimeoutError("synthetic result timeout")
+            recovered.append(row["id"])
+            self.assertEqual(row["account_id"], "original")
+            self.assertEqual(row["conversation_id"], "original-handle")
+            return original_execute(request, index, total, row)
+
+        self.runtime.execute = interrupted
+        paths = [("/v1/images/generations", {"prompt": "draw"}),
+                 ("/v1/images/edits", {"prompt": "draw", "images": [{"b64_json": self.png}]}),
+                 ("/v1/chat/completions", {"messages": [{"role": "user", "content": "draw"}]}),
+                 ("/v1/responses", {"input": "draw"})]
+        with mock.patch("services.generation_recovery.RECOVERY_DELAYS", (0, 0, 0)):
+            for stream in (False, True):
+                for path, body in paths:
+                    response = self.client.post(path, headers=self.admin, json={**body, "model": "gpt-image-2", "stream": stream})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertNotIn("response.failed", response.text)
+                    detail = self.logs.list(type="call")[0]["detail"]
+                    self.assertEqual(detail["status"], "success")
+                    self.assertEqual(detail["recovery_attempts"], 1)
+        self.assertEqual(submitted, recovered)
+        self.assertEqual(len(submitted), 8)
+        self.assertEqual(len(self.logs.path.read_text(encoding="utf-8").splitlines()), 8)
+        self.assertEqual(self.runtime.store.quota("admin")["image_quota_used"], 8)
+        self.assertEqual(self.runtime.store.quota("admin")["image_quota_reserved"], 0)
 
     def test_web_batch_rejects_whole_request_then_exposes_individual_tasks(self):
         item, headers = self.key(1)
@@ -215,6 +335,11 @@ class GenerationAPITests(unittest.TestCase):
         failed = next(event for event in events if event.get("type") == "response.failed")
         self.assertEqual(failed["response"]["error"]["code"], "invalid_image_request")
         self.assertFalse(any(event.get("type") == "response.completed" for event in events))
+        records = self.logs.list(type="call")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(self.logs.path.read_text(encoding="utf-8").splitlines()), 1)
+        self.assertEqual(records[0]["detail"]["status"], "failed")
+        self.assertEqual(records[0]["detail"]["error_category"], "invalid_request")
 
 
 if __name__ == "__main__":

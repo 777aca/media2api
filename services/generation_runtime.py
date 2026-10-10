@@ -15,6 +15,7 @@ import uuid
 from services.generation_context import ExecutionCheckpoint, GenerationContext, execution_checkpoint
 from services.generation_errors import GenerationRuntimeError, RetryImage, classify_image_error
 from services.generation_store import GenerationStore, TERMINAL, dump
+from services.generation_recovery import ResultRecovery, recovery_details
 
 DEFAULT_QUEUE = {"global_concurrency": 8, "key_concurrency": 4, "max_waiting_images": 200,
                  "queue_timeout_seconds": 600, "task_retention_days": 30}
@@ -42,6 +43,7 @@ class GenerationRuntime:
     def __init__(self, directory: Path, *, settings_getter=None, identity_resolver=None, executor=None, account_pool=None):
         self.directory = directory
         self.store = GenerationStore(directory / "generation-runtime.sqlite")
+        self.recovery = ResultRecovery(self.store, directory)
         self.settings_getter = settings_getter or (lambda: DEFAULT_QUEUE)
         self.identity_resolver = identity_resolver or self._resolve_identity
         self.execute = executor or self._execute_image
@@ -207,6 +209,9 @@ class GenerationRuntime:
 
     def dispatch_once(self) -> None:
         settings = self.settings_getter()
+        with self._lock:
+            for task_id, phase in self.recovery.advance(set(self._active)):
+                self._log_task(task_id, phase)
         waiting = self.store.rows("SELECT t.*,j.deadline,j.model,j.channel FROM tasks t JOIN jobs j ON j.id=t.job_id WHERE t.status='queued' ORDER BY t.created,t.ordinal")
         by_owner: dict[str, list] = {}
         identities = {}
@@ -253,7 +258,11 @@ class GenerationRuntime:
                     reservation = self._reserve_account(row)
                 except GenerationRuntimeError as exc:
                     submitted = row["recovery"] == "recovering_result"
-                    self.store.finish(row["id"], status="uncertain" if submitted else "error",
+                    if submitted:
+                        self.recovery.finish_failed(row["id"], "image_result_unrecoverable", "原生图账号已删除或禁用，无法读取原结果")
+                        self._log_task(row["id"], row["phase"])
+                    else:
+                        self.store.finish(row["id"], status="error",
                                       category=row["error_category"] or classify_image_error(exc).category,
                                       code=row["error_code"] or exc.code, error=row["error"] or str(exc), http_status=row["http_status"] or exc.status_code)
                     by_owner[owner].pop(0)
@@ -284,8 +293,8 @@ class GenerationRuntime:
                         self._active.pop(row["id"], None)
                         active_counts[owner] -= 1
                         with self.store.lock:
-                            self.store.db.execute("UPDATE tasks SET status='queued',phase=?,started=?,account_id=?,attempt=?,recovery=?,updated=? WHERE id=? AND status='running'",
-                                                  (row["phase"], row["started"], row["account_id"], row["attempt"], row["recovery"], time.time(), row["id"]))
+                            self.store.db.execute("UPDATE tasks SET status='queued',phase=?,started=?,account_id=?,attempt=?,recovery=?,recovery_attempts=?,recovery_next_at=?,updated=? WHERE id=? AND status='running'",
+                                                  (row["phase"], row["started"], row["account_id"], row["attempt"], row["recovery"], row["recovery_attempts"], row["recovery_next_at"], time.time(), row["id"]))
                     raise
                 finally:
                     if not handed_off and account_token:
@@ -301,6 +310,8 @@ class GenerationRuntime:
             from services.protocol.conversation import account_service
             pool = account_service
         recovering = row["recovery"] == "recovering_result"
+        if recovering and not row["account_id"]:
+            raise GenerationRuntimeError("原生图账号标识缺失", "image_result_unrecoverable", 502)
         token = pool.try_acquire_image_token(model=row["model"], channel=row["channel"],
                                             excluded_ids=set() if recovering else set(json.loads(row["attempted_accounts"])),
                                             preferred_id=(row["account_id"] or "") if recovering else "")
@@ -325,6 +336,8 @@ class GenerationRuntime:
             request.progress_callback = lambda phase: self.store.checkpoint(task_id, progress=phase)
             if row["phase"] == "output_saved":
                 serialized = json.loads(self._private_path(row["job_id"], f"{task_id}-output.json").read_text(encoding="utf-8"))
+                if not isinstance(serialized, list) or not any(isinstance(item, dict) and item.get("kind") == "result" and item.get("data") for item in serialized):
+                    raise GenerationRuntimeError("保存的图片结果不可读取", "image_result_checkpoint_invalid", 502)
             else:
                 if row["phase"] == "raw_saved":
                     row["raw_images"] = json.loads(self._private_path(row["job_id"], f"{task_id}-raw.json").read_text(encoding="utf-8"))
@@ -334,8 +347,11 @@ class GenerationRuntime:
                     raise GenerationRuntimeError("上游未返回可读取图片", "no_image_generated", 502)
                 self._write_json(row["job_id"], f"{task_id}-output.json", serialized)
                 checkpoint.update("output_saved")
-            self.store.finish(task_id, status="success", output=serialized)
-            self._cleanup_conversation(self.store.task(task_id))
+            if row["recovery_deadline"] is not None and time.time() >= row["recovery_deadline"]:
+                self.recovery.finish_failed(task_id, "image_result_recovery_expired", "自动读取原结果已超过 10 分钟")
+            else:
+                self.store.finish(task_id, status="success", output=serialized)
+                self._cleanup_conversation(self.store.task(task_id))
         except RetryImage:
             self.store.requeue_attempt(task_id)
         except Exception as exc:
@@ -344,11 +360,7 @@ class GenerationRuntime:
             current = self.store.task(task_id)
             uncertain = getattr(exc, "submission_uncertain", current["phase"] not in {"queued", "preparing", "account_selected", "rejected"})
             message = public_image_error_message(str(exc))
-            if uncertain and not row["recovery"] == "recovering_result" and (current["conversation_id"] or current["phase"] in {"raw_saved", "output_saved"}):
-                with self.store.lock:
-                    self.store.db.execute("UPDATE tasks SET status='queued',recovery='recovering_result',error_category=?,error=?,updated=? WHERE id=? AND status='running'", (getattr(exc, "failure_category", failure.category), message, time.time(), task_id))
-            else:
-                self.store.finish(task_id, status="uncertain" if uncertain else "error", category=getattr(exc, "failure_category", failure.category),
+            self.store.finish(task_id, status="uncertain" if uncertain else "error", category=getattr(exc, "failure_category", failure.category),
                                   code="image_result_uncertain" if uncertain else (getattr(exc, "code", None) or failure.category),
                                   error=message, http_status=409 if uncertain else (getattr(exc, "status_code", None) or 502))
         finally:
@@ -393,15 +405,22 @@ class GenerationRuntime:
     def _log_task(self, task_id: str, phase: str) -> None:
         try:
             from services.log_service import log_service, LOG_TYPE_CALL, sanitize_request_parameters
+            from services.image_call_logging import task_diagnostics
+            from utils.log import logger
             row = self.store.task(task_id)
+            diagnostics = task_diagnostics(row, phase)
+            logger.info({"event": "image_task_status", "image_task_id": row["job_id"], **diagnostics})
+            # Compatible API calls are logged once by LoggedCall, including SSE.
+            # Web background tasks have no waiting HTTP call to log their result.
+            if not row["endpoint"].startswith("/api/image-tasks/") or row["status"] not in TERMINAL:
+                return
             identity = json.loads(row["identity"])
             payload = json.loads(row["payload"])
             request_params = {key: value for key, value in payload.items() if key not in {"base_url", "client_task_ids", "has_inputs"}}
             log_service.add(LOG_TYPE_CALL, "生图任务状态", {"image_task_id": row["job_id"], "image_child_id": task_id,
                             "key_id": row["owner"], "key_name": identity.get("name", ""), "role": identity.get("role", ""),
                             "endpoint": row["endpoint"], "model": row["model"], "channel": row["channel"], "status": row["status"],
-                            "error_category": row["error_category"], "phase": phase, "retry_count": max(0, row["attempt"] - 1),
-                            "recovery_status": row["recovery"], "outcome": row["status"], "error_code": row["error_code"],
+                            **diagnostics,
                             "request_params": sanitize_request_parameters(request_params)})
         except Exception:
             pass
@@ -419,7 +438,7 @@ class GenerationRuntime:
                     emitted.add(row["id"])
                     for value in json.loads(row["output"] or "[]"):
                         yield ImageOutput(**value)
-            unfinished = [row for row in rows if row["status"] in {"queued", "running"} or row["id"] in active]
+            unfinished = [row for row in rows if row["status"] in {"queued", "running", "uncertain"} or row["id"] in active]
             if not unfinished:
                 if not emitted:
                     failed = rows[0]
@@ -428,7 +447,7 @@ class GenerationRuntime:
                     error.pool_account_id = failed["account_id"] or ""
                     raise error
                 return
-            phase = "queued" if all(row["status"] == "queued" for row in unfinished) else ("recovering_result" if any(row["recovery"] == "recovering_result" for row in unfinished) else "generating")
+            phase = "recovering_result" if any(row["recovery"] in {"auto_pending", "recovering_result"} or row["status"] == "uncertain" for row in unfinished) else ("queued" if all(row["status"] == "queued" for row in unfinished) else "generating")
             if phase != last_progress:
                 yield ImageOutput(kind="progress", model=request.model, index=1, total=request.n, text=phase, upstream_event_type=phase)
                 if request.progress_callback:
@@ -460,6 +479,8 @@ class GenerationRuntime:
                                        "error_category": child["error_category"], "error_code": child["error_code"], "recovery_status": child["recovery"], "conversation_id": child["conversation_id"],
                                        "queue_seconds": round((child["started"] or child["finished"] or time.time()) - child["created"], 2),
                                        "updated_at": _iso(child["updated"]),
+                                       **recovery_details(child),
+                                       "recovery_active": child["status"] == "uncertain" or (child["status"] in {"queued", "running"} and child["recovery"] == "recovering_result"),
                                        "children": [item["children"][index]]})
                 else:
                     result.append(item)
@@ -473,6 +494,8 @@ class GenerationRuntime:
         data = [item for row in rows if row["status"] == "success" for output in json.loads(row["output"] or "[]") for item in output.get("data", [])]
         data = [{key: value for key, value in item.items() if key != "b64_json"} for item in data]
         current = next((row for row in rows if row["status"] == status), rows[0])
+        recovering = [row for row in rows if row["status"] == "uncertain" or (row["status"] in {"queued", "running"} and row["recovery"] == "recovering_result")]
+        current = next(iter(recovering), next((row for row in rows if row["recovery_deadline"] is not None or row["recovery"] == "auto_failed"), current))
         started = min((r["started"] for r in rows if r["started"]), default=None)
         return {"id": job["external_id"] if job["endpoint"].startswith("/api/image-tasks") else job["id"],
                 "task_id": job["id"], "status": status, "mode": "edit" if "edit" in job["endpoint"] else "generate",
@@ -483,7 +506,9 @@ class GenerationRuntime:
                 "conversation_id": current["conversation_id"], "queue_seconds": round((started or current["finished"] or time.time()) - job["created"], 2),
                 "elapsed_secs": round(time.time() - (started or job["created"]), 1) if status in {"queued", "running"} else None,
                 "partial_success": bool(counts["success"] and counts["success"] < len(rows)),
-                "children": [{k: r[k] for k in ("id", "ordinal", "status", "phase", "recovery", "error_category", "error_code", "attempt")} for r in rows]}
+                **recovery_details(current),
+                "recovery_active": bool(recovering),
+                "children": [{**{k: r[k] for k in ("id", "ordinal", "status", "phase", "recovery", "error_category", "error_code", "attempt")}, **recovery_details(r)} for r in rows]}
 
     def change_task(self, identity: dict, task_id: str, action: str) -> dict:
         jobs = self.jobs(identity, [task_id], all_users=identity.get("role") == "admin")
@@ -502,9 +527,13 @@ class GenerationRuntime:
                     self.store.finish(row["id"], status="cancelled", code="image_task_cancelled", error="任务已取消", http_status=409)
                 elif action == "end" and row["status"] == "uncertain":
                     self.store.finish(row["id"], status="cancelled", code="image_task_ended", error="管理员已结束待确认任务", http_status=409)
-                elif action == "resume" and row["status"] == "uncertain" and (row["conversation_id"] or row["phase"] in {"raw_saved", "output_saved"}):
-                    with self.store.lock:
-                        self.store.db.execute("UPDATE tasks SET status='queued',recovery='recovering_result',updated=? WHERE id=?", (time.time(), row["id"]))
+                elif action == "resume":
+                    # Legacy clients may request recovery; the scheduler owns its
+                    # deadlines and attempts, so repeated clicks cannot bypass them.
+                    if row["status"] == "uncertain" or row["recovery"] in {"auto_pending", "recovering_result"}:
+                        continue
+                    if row["status"] != "success":
+                        raise GenerationRuntimeError("任务已结束，无法继续读取原结果", "image_task_ended", 409)
         self._wake.set()
         return self.jobs(identity, [job["task_id"]], all_users=identity.get("role") == "admin")[0]
 

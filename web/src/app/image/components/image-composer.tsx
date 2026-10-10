@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { ImageModel } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { IMAGE_SIZE_PRESETS, imageSizeError, isExperimentalSize } from "@/lib/image-resolution";
+import { getImageQualityOptions } from "@/lib/image-quality";
 
 type ImageComposerProps = {
   prompt: string;
@@ -58,12 +59,6 @@ function getDraggedImageFiles(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.files || []).filter(isImageFile);
 }
 
-const qualityOptions = [
-  { value: "auto", label: "自动" },
-  { value: "low", label: "低" },
-  { value: "medium", label: "中" },
-  { value: "high", label: "高" },
-];
 const aspectOptions = IMAGE_SIZE_PRESETS.map((preset) => ({ ...preset,
   icon: preset.ratio === "auto" ? null : preset.width === preset.height ? Square : Number(preset.width) > Number(preset.height) ? RectangleHorizontal : RectangleVertical,
 }));
@@ -114,6 +109,7 @@ export function ImageComposer({
   );
   const sizeError = imageRatio === "auto" ? null : imageSizeError(`${imageWidth}x${imageHeight}`);
   const experimental = imageRatio !== "auto" && isExperimentalSize(imageWidth, imageHeight);
+  const qualityOptions = getImageQualityOptions(imageModel);
   const qualityLabel = qualityOptions.find((option) => option.value === imageQuality)?.label || "自动";
   const ratioLabel = imageRatio === "auto" ? "自动" : imageRatio === "custom" ? `${imageWidth}×${imageHeight}` : `${imageRatio}(${imageTier.toUpperCase()})`;
   const imageSizeLabel = `${qualityLabel} · ${ratioLabel} · ${imageCount || 1} 张`;
@@ -385,7 +381,7 @@ export function ImageComposer({
                         </div>
                         <div className="mb-3">
                           <div className="mb-2 text-sm font-medium text-stone-900">质量</div>
-                          <div className="grid grid-cols-4 gap-2">
+                          <div className={cn("grid gap-2", qualityOptions.length > 4 ? "grid-cols-3" : "grid-cols-4")}>
                             {qualityOptions.map((option) => {
                               const active = option.value === imageQuality;
                               return (
