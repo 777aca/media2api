@@ -21,6 +21,13 @@ def prepare_image_call(handler, body: dict, context: GenerationContext) -> None:
     """Normalize with the existing protocol parser; stop before any upstream generation."""
     context.prepare_only = True
     try:
+        from utils.helper import parse_image_count
+        parse_image_count(body.get("n"))
+        for tool in body.get("tools") or []:
+            if isinstance(tool, dict) and tool.get("type") == "image_generation":
+                parse_image_count(tool.get("n"))
+        if len(context.client_task_ids) > 1:
+            raise GenerationRuntimeError("每次请求仅支持生成 1 张图片，不支持批量生成", "invalid_image_count", 400)
         result = handler({**body, "_image_context": context})
         if not isinstance(result, dict):
             for _ in result:
@@ -38,6 +45,7 @@ def prepare_image_call(handler, body: dict, context: GenerationContext) -> None:
         context.prepare_only = False
     if context.request is None:
         raise GenerationRuntimeError("请求未包含生图任务", "invalid_image_request", 400)
+    parse_image_count(context.request.n)
     from services.generation_runtime import get_generation_runtime
     try:
         get_generation_runtime().submit(context.request, context)
@@ -74,7 +82,7 @@ class DurableImageTasks:
         external_id = values.pop("client_task_id")
         context = GenerationContext(identity, f"/api/image-tasks/{endpoint}", external_id)
         context.client_task_ids = values.pop("client_task_ids", None) or []
-        prepare_image_call(handler, {**values, "n": len(context.client_task_ids) or 1, "response_format": "url"}, context)
+        prepare_image_call(handler, {"n": len(context.client_task_ids) or 1, **values, "response_format": "url"}, context)
         items = get_generation_runtime().jobs(identity, [context.task_id])
         return {"items": items} if context.client_task_ids else items[0]
 

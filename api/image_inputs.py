@@ -15,6 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
 from services.proxy_service import proxy_settings
+from utils.helper import parse_image_count
 
 ImageInput = tuple[bytes, str, str]
 ImageSource = str | UploadFile | ImageInput
@@ -50,14 +51,8 @@ def _parse_bool(value: object) -> bool | None:
 
 
 def _parse_count(value: object) -> int:
-    """解析生成数量：保持图片接口的 1 到 4 限制。"""
-    try:
-        count = int(value or 1)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail={"error": "n must be an integer"}) from exc
-    if count < 1 or count > 4:
-        raise HTTPException(status_code=400, detail={"error": "n must be between 1 and 4"})
-    return count
+    """JSON 和表单统一限制每次只生成一张。"""
+    return parse_image_count(value)
 
 
 def _payload_from_fields(fields: dict[str, Any]) -> dict[str, Any]:
@@ -85,6 +80,8 @@ def _payload_from_fields(fields: dict[str, Any]) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail="invalid client_task_ids") from exc
         if not isinstance(ids, list) or not 1 <= len(ids) <= 16 or not all(isinstance(key, str) and 0 < len(key) <= 256 for key in ids):
             raise HTTPException(status_code=400, detail="invalid client_task_ids")
+        if len(ids) > 1:
+            raise HTTPException(status_code=400, detail={"error": {"message": "每次请求仅支持生成 1 张图片，不支持批量生成", "code": "invalid_image_count", "param": "client_task_ids"}})
         payload["client_task_ids"] = ids
     return payload
 

@@ -101,7 +101,7 @@ class RequestLoggingTests(unittest.TestCase):
         return self.logs.list()[0]["detail"]
 
     def test_generation_logs_only_submitted_fields_without_internal_base_url(self):
-        body = {"prompt": "cat\nline two", "model": "gpt-image-2.5-flare", "n": 2, "size": "1024x1024",
+        body = {"prompt": "cat\nline two", "model": "gpt-image-2.5-flare", "n": 1, "size": "1024x1024",
                 "quality": "high", "response_format": "url", "stream": False, "custom_option": "provided"}
         with mock.patch.object(ai.openai_v1_image_generations, "handle", return_value={"data": []}):
             response = self.client.post("/v1/images/generations", json=body, headers={"Authorization": "Bearer private-header"})
@@ -183,13 +183,13 @@ class RequestLoggingTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(self.latest_detail()["request_params"]["quality"], "high")
             self.assertNotIn(DATA_URL, json.dumps(self.latest_detail()))
-            response = self.client.post("/v1/images/edits", data={"prompt": "edit", "n": "2", "quality": "high"},
+            response = self.client.post("/v1/images/edits", data={"prompt": "edit", "n": "1", "quality": "high"},
                                         files=[("image", ("one.png", b"private-one", "image/png")),
                                                ("image", ("two.png", b"private-two", "image/png")),
                                                ("mask", ("mask.png", b"private-mask", "image/png"))])
         self.assertEqual(response.status_code, 200, response.text)
         params = self.latest_detail()["request_params"]
-        self.assertEqual(params["n"], "2")
+        self.assertEqual(params["n"], "1")
         self.assertEqual([image["filename"] for image in params["image"]], ["one.png", "two.png"])
         self.assertEqual(params["mask"]["size_bytes"], len(b"private-mask"))
         self.assertNotIn("private-one", self.logs.path.read_text(encoding="utf-8"))

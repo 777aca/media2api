@@ -453,12 +453,16 @@ def extract_chat_prompt(body: dict[str, object]) -> str:
 
 
 def parse_image_count(raw_value: object) -> int:
+    if raw_value is None or raw_value == "":
+        return 1
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, str)):
+        raise HTTPException(status_code=400, detail={"error": {"message": "n must be an integer", "code": "invalid_image_count", "param": "n"}})
     try:
-        value = int(raw_value or 1)
+        value = int(raw_value)
     except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail={"error": "n must be an integer"}) from exc
-    if value < 1 or value > 4:
-        raise HTTPException(status_code=400, detail={"error": "n must be between 1 and 4"})
+        raise HTTPException(status_code=400, detail={"error": {"message": "n must be an integer", "code": "invalid_image_count", "param": "n"}}) from exc
+    if value != 1:
+        raise HTTPException(status_code=400, detail={"error": {"message": "每次请求仅支持生成 1 张图片，不支持批量生成", "code": "invalid_image_count", "param": "n"}})
     return value
 
 

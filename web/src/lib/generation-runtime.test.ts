@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseImageQuota, parseStatistics } from "./generation-runtime";
+import { createImageTaskBatch, parseImageQuota, parseStatistics } from "./generation-runtime";
 
 function statistics() {
   return {
@@ -11,6 +11,11 @@ function statistics() {
 }
 
 describe("生图运行数据", () => {
+  it("拒绝批量任务，不拆分成多个请求", async () => {
+    for (const ids of [[], ["one", "two"]]) {
+      await assert.rejects(createImageTaskBatch(ids, [], "draw", "gpt-image-2", "auto", "auto"), /仅支持生成 1 张图片/);
+    }
+  });
   it("空统计保留 null，不能显示成 0% 成功率", () => {
     const parsed = parseStatistics(statistics());
     assert.equal(parsed.summary.platform_success_rate, null);

@@ -224,7 +224,7 @@ def assistant_history_messages(messages: list[dict[str, Any]]) -> list[str]:
 
 
 def build_image_prompt(prompt: str, size: str | None, quality: str = "auto") -> str:
-    hints = []
+    hints = ["本次只生成 1 张图片（n=1），不要生成多张图片或多个候选版本。"]
     if size:
         size_hint = f"输出图片尺寸为 {size}。"
         dimensions = re.fullmatch(r"\s*([0-9]+)\s*[xX×]\s*([0-9]+)\s*", size)
@@ -292,7 +292,10 @@ def format_image_result(
     created: int | None = None,
     message: str = "",
     *, requested_size: str | None = None, progress_callback: Callable[[str], None] | None = None,
+    max_images: int | None = None,
 ) -> dict[str, Any]:
+    if max_images is not None:
+        items = [item for item in items if str(item.get("b64_json") or "").strip()][:max_images]
     save_raw_images(items)
     data: list[dict[str, Any]] = []
     for item in items:
@@ -1049,7 +1052,7 @@ def stream_image_outputs(
             request.progress_callback("receiving_image")
         image_items = [
             {"b64_json": base64.b64encode(image_data).decode("ascii")}
-            for image_data in backend.download_image_bytes(image_urls)
+            for image_data in backend.download_image_bytes(image_urls[:1])
         ]
         data = format_image_result(
             image_items,
@@ -1058,6 +1061,7 @@ def stream_image_outputs(
             request.base_url,
             int(time.time()),
             requested_size=request.size, progress_callback=request.progress_callback,
+            max_images=1,
         )["data"]
         if data:
             yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1147,7 +1151,7 @@ def stream_image_outputs(
                         request.progress_callback("receiving_image")
                     image_items = [
                         {"b64_json": base64.b64encode(image_data).decode("ascii")}
-                        for image_data in backend.download_image_bytes(image_urls)
+                        for image_data in backend.download_image_bytes(image_urls[:1])
                     ]
                     data = format_image_result(
                         image_items,
@@ -1156,6 +1160,7 @@ def stream_image_outputs(
                         request.base_url,
                         int(time.time()),
                         requested_size=request.size, progress_callback=request.progress_callback,
+                        max_images=1,
                     )["data"]
                     if data:
                         yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1260,7 +1265,7 @@ def stream_image_outputs(
                     request.progress_callback("receiving_image")
                 image_items = [
                     {"b64_json": base64.b64encode(image_data).decode("ascii")}
-                    for image_data in backend.download_image_bytes(image_urls)
+                    for image_data in backend.download_image_bytes(image_urls[:1])
                 ]
                 data = format_image_result(
                     image_items,
@@ -1269,6 +1274,7 @@ def stream_image_outputs(
                     request.base_url,
                     int(time.time()),
                     requested_size=request.size, progress_callback=request.progress_callback,
+                    max_images=1,
                 )["data"]
                 if data:
                     yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1316,7 +1322,7 @@ def stream_codex_image_outputs(
         total: int = 1,
 ) -> Iterator[ImageOutput]:
     images = _codex_response_images(list(backend.iter_codex_image_response_events(
-        prompt=request.prompt,
+        prompt=build_image_prompt(request.prompt, request.size, request.quality),
         images=request.images or [],
         size=request.size,
         quality=request.quality,
@@ -1330,6 +1336,7 @@ def stream_codex_image_outputs(
         request.base_url,
         int(time.time()),
         requested_size=request.size, progress_callback=request.progress_callback,
+        max_images=1,
     )["data"]
     if data:
         yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)

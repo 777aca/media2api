@@ -30,7 +30,7 @@ def execute_image(request, index: int, total: int, row: dict):
     try:
         if "raw_images" in row:
             data = format_image_result(row["raw_images"], request.prompt, request.response_format, request.base_url,
-                                       requested_size=request.size, progress_callback=request.progress_callback)["data"]
+                                       requested_size=request.size, progress_callback=request.progress_callback, max_images=1)["data"]
             return [ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=row.get("conversation_id") or "")]
         while recovering or len(attempted) < 3:
             try:
@@ -59,12 +59,12 @@ def execute_image(request, index: int, total: int, row: dict):
                             checkpoint("polling", conversation_id=conversation_id)
                             timeout = min(120, max(1, int((row.get("recovery_deadline") or time.time() + 120) - time.time())))
                             urls = backend.resolve_conversation_image_urls(conversation_id, [], [], poll_timeout_secs=timeout)
-                            items = [{"b64_json": base64.b64encode(data).decode("ascii")} for data in backend.download_image_bytes(urls)]
+                            items = [{"b64_json": base64.b64encode(data).decode("ascii")} for data in backend.download_image_bytes(urls[:1])[:1]]
                             if items:
                                 from services.generation_context import save_raw_images
                                 save_raw_images(items)
                             data = format_image_result(items, request.prompt, request.response_format, request.base_url,
-                                                       requested_size=request.size, progress_callback=request.progress_callback)["data"]
+                                                       requested_size=request.size, progress_callback=request.progress_callback, max_images=1)["data"]
                             if not data:
                                 raise ImageGenerationError("原任务尚无可读取图片", code="upstream_image_timeout")
                             outputs = [ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)]

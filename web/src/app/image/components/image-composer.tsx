@@ -14,7 +14,6 @@ import { getImageQualityOptions } from "@/lib/image-quality";
 
 type ImageComposerProps = {
   prompt: string;
-  imageCount: string;
   imageRatio: string;
   imageTier: string;
   imageWidth: string;
@@ -28,7 +27,6 @@ type ImageComposerProps = {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   fileInputRef: RefObject<HTMLInputElement | null>;
   onPromptChange: (value: string) => void;
-  onImageCountChange: (value: string) => void;
   onImageRatioChange: (value: string) => void;
   onImageTierChange: (value: string) => void;
   onImageWidthChange: (value: string) => void;
@@ -62,11 +60,9 @@ function getDraggedImageFiles(dataTransfer: DataTransfer) {
 const aspectOptions = IMAGE_SIZE_PRESETS.map((preset) => ({ ...preset,
   icon: preset.ratio === "auto" ? null : preset.width === preset.height ? Square : Number(preset.width) > Number(preset.height) ? RectangleHorizontal : RectangleVertical,
 }));
-const countOptions = Array.from({ length: 10 }, (_, index) => String(index + 1));
 
 export function ImageComposer({
   prompt,
-  imageCount,
   imageRatio,
   imageTier,
   imageWidth,
@@ -80,7 +76,6 @@ export function ImageComposer({
   textareaRef,
   fileInputRef,
   onPromptChange,
-  onImageCountChange,
   onImageRatioChange,
   onImageTierChange,
   onImageWidthChange,
@@ -112,7 +107,7 @@ export function ImageComposer({
   const qualityOptions = getImageQualityOptions(imageModel);
   const qualityLabel = qualityOptions.find((option) => option.value === imageQuality)?.label || "自动";
   const ratioLabel = imageRatio === "auto" ? "自动" : imageRatio === "custom" ? `${imageWidth}×${imageHeight}` : `${imageRatio}(${imageTier.toUpperCase()})`;
-  const imageSizeLabel = `${qualityLabel} · ${ratioLabel} · ${imageCount || 1} 张`;
+  const imageSizeLabel = `${qualityLabel} · ${ratioLabel} · 1 张`;
   const selectedModelLabel = modelOptions.find((option) => option.value === imageModel)?.label || imageModel;
 
   useEffect(() => {
@@ -471,35 +466,7 @@ export function ImageComposer({
                           </div>
                         </div>
                         <div className="border-t border-stone-100 pt-3">
-                          <div className="mb-2 text-sm font-medium text-stone-900">生成数量</div>
-                          <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">
-                            {countOptions.map((option) => {
-                              const active = imageCount === option;
-                              return (
-                                <button
-                                  key={option}
-                                  type="button"
-                                  className={cn(
-                                    "h-9 cursor-pointer rounded-full border border-stone-200 bg-white text-sm text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
-                                    active && "border-stone-950 bg-white font-medium text-stone-950",
-                                  )}
-                                  onClick={() => onImageCountChange(option)}
-                                >
-                                  {option} 张
-                                </button>
-                              );
-                            })}
-                            <Input
-                              type="number"
-                              inputMode="numeric"
-                              min="1"
-                              max="100"
-                              step="1"
-                              value={imageCount}
-                              onChange={(event) => onImageCountChange(event.target.value)}
-                              className="h-9 rounded-full border-stone-200 bg-white px-3 text-center text-sm font-medium text-stone-800 shadow-none focus-visible:ring-0"
-                            />
-                          </div>
+                          <p className="text-sm text-stone-500">每次生成 1 张图片</p>
                         </div>
                       </div>
                     ) : null}

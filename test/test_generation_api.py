@@ -154,22 +154,69 @@ class GenerationAPITests(unittest.TestCase):
         self.assertEqual(detail["outcome"], "error")
         self.assertEqual(len(attempts), 2)
 
-    def test_multi_image_partial_success_has_one_call_with_all_children(self):
-        original_execute = self.runtime.execute
+    def test_single_image_protocols_discard_upstream_extras_before_logging_and_charging(self):
+        from services.protocol import conversation
 
-        def partial(request, index, total, row):
-            if row["ordinal"] == 1:
-                raise GenerationRuntimeError("合成参数错误", "invalid_image_request", 400)
-            return original_execute(request, index, total, row)
+        backend = mock.Mock()
+        urls = ["https://files.test/first.png", "https://files.test/extra.png"]
+        backend.resolve_conversation_image_urls.return_value = urls
+        backend.download_image_bytes.return_value = [base64.b64decode(self.png), b"extra-image"]
+        self.runtime.execute = lambda request, index, total, _row: list(conversation.stream_image_outputs(backend, request, index, total))
+        event = {"type": "conversation.done", "conversation_id": "original", "file_ids": ["file-first", "file-extra"]}
+        paths = [("/v1/images/generations", {"prompt": "draw"}),
+                 ("/v1/images/edits", {"prompt": "draw", "images": [{"b64_json": self.png}]}),
+                 ("/v1/chat/completions", {"messages": [{"role": "user", "content": "draw"}]}),
+                 ("/v1/responses", {"input": "draw"})]
+        with mock.patch.object(conversation, "conversation_events", return_value=[event]), \
+                mock.patch.object(conversation, "save_image_bytes", return_value="/images/first.png") as save:
+            for stream in (False, True):
+                for path, body in paths:
+                    with self.subTest(path=path, stream=stream):
+                        response = self.client.post(path, headers=self.admin, json={**body, "model": "gpt-image-2", "n": 1, "stream": stream})
+                        self.assertEqual(response.status_code, 200, response.text)
+                        self.assertNotIn(base64.b64encode(b"extra-image").decode(), response.text)
+                        detail = self.logs.list(type="call")[0]["detail"]
+                        if path.startswith("/v1/images/"):
+                            self.assertEqual(detail["urls"], ["/images/first.png"])
+                        self.assertEqual(len(detail["image_tasks"]), 1)
+                        job_id = response.headers["X-Image-Task-Id"]
+                        child = self.runtime.store.rows("SELECT id FROM tasks WHERE job_id=?", (job_id,))[0]["id"]
+                        raw = json.loads((self.root / "generation-tasks" / job_id / f"{child}-raw.json").read_text())
+                        self.assertEqual(len(raw), 1)
+                        results = [output for output in self.runtime.store.output(child) if output["kind"] == "result"]
+                        self.assertEqual(len(results), 1)
+                        self.assertEqual(len(results[0]["data"]), 1)
+            self.assertEqual(save.call_count, 8)
+        self.assertEqual(backend.download_image_bytes.call_args_list, [mock.call(urls[:1])] * 8)
+        self.assertEqual(self.runtime.store.quota("admin")["image_quota_used"], 8)
+        self.assertEqual(self.runtime.store.quota("admin")["image_quota_reserved"], 0)
 
-        self.runtime.execute = partial
-        response = self.client.post("/v1/images/generations", headers=self.admin, json={"prompt": "draw", "n": 2})
-        self.assertEqual(response.status_code, 200, response.text)
-        records = self.logs.list(type="call")
-        self.assertEqual(len(records), 1)
-        self.assertEqual(len(self.logs.path.read_text(encoding="utf-8").splitlines()), 1)
-        self.assertCountEqual([task["outcome"] for task in records[0]["detail"]["image_tasks"]], ["success", "error"])
-        self.assertTrue(records[0]["detail"]["urls"])
+    def test_all_public_image_protocols_reject_batch_before_execution(self):
+        paths = [("/v1/images/generations", {"prompt": "draw"}),
+                 ("/v1/images/edits", {"prompt": "draw", "images": [{"b64_json": self.png}]}),
+                 ("/v1/chat/completions", {"messages": [{"role": "user", "content": "draw"}]}),
+                 ("/v1/responses", {"input": "draw"}),
+                 ("/api/image-tasks/generations", {"prompt": "draw", "client_task_id": "single"}),
+                 ("/api/image-tasks/edits", {"prompt": "draw", "client_task_id": "single", "images": [{"b64_json": self.png}]})]
+        for stream in (False, True):
+            for path, body in paths:
+                with self.subTest(path=path, stream=stream):
+                    response = self.client.post(path, headers=self.admin, json={**body, "model": "gpt-image-2", "n": 2, "stream": stream})
+                    self.assertEqual(response.status_code, 400, response.text)
+                    self.assertIn("invalid_image_count", response.text)
+        for n in (None, 1):
+            response = self.client.post("/v1/responses", headers=self.admin, json={
+                "model": "gpt-image-2", "input": "draw", "n": n, "tools": [{"type": "image_generation", "n": 2}],
+            })
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertEqual(response.json()["error"]["code"], "invalid_image_count")
+        for path in ("/v1/images/edits", "/api/image-tasks/edits"):
+            response = self.client.post(path, headers=self.admin, data={"prompt": "draw", "n": "2", "client_task_id": "single"},
+                                        files={"image": ("reference.png", base64.b64decode(self.png), "image/png")})
+            self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.runtime.store.quota("admin")["image_quota_used"], 0)
+        self.assertEqual(self.runtime.store.quota("admin")["image_quota_reserved"], 0)
 
     def test_web_background_generation_still_records_completion(self):
         response = self.client.post("/api/image-tasks/generations", headers=self.admin,
@@ -236,25 +283,29 @@ class GenerationAPITests(unittest.TestCase):
         self.assertEqual(self.runtime.store.quota("admin")["image_quota_used"], 8)
         self.assertEqual(self.runtime.store.quota("admin")["image_quota_reserved"], 0)
 
-    def test_web_batch_rejects_whole_request_then_exposes_individual_tasks(self):
+    def test_web_batch_is_rejected_and_single_task_ids_remain_compatible(self):
         item, headers = self.key(1)
         body = {"client_task_id": "batch-1", "client_task_ids": ["child-1", "child-2"], "prompt": "draw"}
         response = self.client.post("/api/image-tasks/generations", headers=headers, json=body)
-        self.assertEqual(response.status_code, 429, response.text)
-        self.assertEqual(response.json()["error"]["code"], "image_quota_exceeded")
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["error"]["code"], "invalid_image_count")
         self.assertEqual(self.runtime.store.quota(item["id"])["image_quota_reserved"], 0)
         self.assertEqual(self.calls, [])
-        self.client.post(f"/api/auth/users/{item['id']}", headers=self.admin, json={"image_quota_limit": 2})
+        for payload in ({**body, "n": 1}, {**body, "images": [{"b64_json": self.png}]}):
+            path = "/api/image-tasks/edits" if "images" in payload else "/api/image-tasks/generations"
+            rejected = self.client.post(path, headers=headers, json=payload)
+            self.assertEqual(rejected.status_code, 400, rejected.text)
+        body["client_task_ids"] = ["child-1"]
         response = self.client.post("/api/image-tasks/generations", headers=headers, json=body)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual([task["id"] for task in response.json()["items"]], body["client_task_ids"])
-        self.wait_for(lambda: self.runtime.store.quota(item["id"])["image_quota_used"] == 2)
+        self.wait_for(lambda: self.runtime.store.quota(item["id"])["image_quota_used"] == 1)
         queried = self.client.get("/api/image-tasks?ids=child-1,child-2,missing", headers=headers).json()
-        self.assertEqual(queried["missing_ids"], ["missing"])
+        self.assertEqual(queried["missing_ids"], ["child-2", "missing"])
         self.assertTrue(all(task["status"] == "success" for task in queried["items"]))
         duplicate = self.client.post("/api/image-tasks/generations", headers=headers, json=body)
         self.assertEqual(duplicate.status_code, 200)
-        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(len(self.calls), 1)
         conflict = self.client.post("/api/image-tasks/generations", headers=headers, json={**body, "prompt": "different"})
         self.assertEqual(conflict.status_code, 409)
 

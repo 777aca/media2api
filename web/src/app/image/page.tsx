@@ -54,7 +54,6 @@ const IMAGE_RATIO_STORAGE_KEY = "media2api:image_last_ratio";
 const IMAGE_TIER_STORAGE_KEY = "media2api:image_last_tier";
 const IMAGE_QUALITY_STORAGE_KEY = "media2api:image_last_quality";
 const IMAGE_MODEL_STORAGE_KEY = "media2api:image_last_model";
-const IMAGE_COUNT_STORAGE_KEY = "media2api:image_last_count";
 const SCROLL_POSITIONS_STORAGE_KEY = "media2api:image_scroll_positions";
 const SCROLL_TO_LATEST_THRESHOLD = 160;
 
@@ -81,9 +80,6 @@ function saveScrollPositions(positions: Map<string, number>) {
   }
 }
 
-function clampImageCount(value: string) {
-  return String(Math.min(100, Math.max(1, Math.floor(Number(value) || 1))));
-}
 function parseImageSize(size: string) {
   const match = size.match(/^(\d+)x(\d+)$/);
   return match ? { width: match[1], height: match[2] } : { width: "1024", height: "1024" };
@@ -476,7 +472,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const config = useSettingsStore((state) => state.config);
 
   const [imagePrompt, setImagePrompt] = useState("");
-  const [imageCount, setImageCount] = useState("3");
   const [imageRatio, setImageRatio] = useState("auto");
   const [imageTier, setImageTier] = useState("1k");
   const [imageWidth, setImageWidth] = useState("1024");
@@ -504,7 +499,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     | null
   >(null);
 
-  const parsedCount = useMemo(() => Number(clampImageCount(imageCount)), [imageCount]);
   const selectedConversation = useMemo(
     () => conversations.find((item) => item.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId],
@@ -621,8 +615,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_QUALITY_STORAGE_KEY) : null;
       const storedModel =
         typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_MODEL_STORAGE_KEY) : null;
-      const storedCount =
-        typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_COUNT_STORAGE_KEY) : null;
       setImageRatio(storedRatio || "1:1");
       setImageTier(storedTier || "1k");
       const preset = IMAGE_SIZE_PRESETS.find((item) => item.ratio === (storedRatio || "1:1") && item.tier === (storedTier || "1k"));
@@ -630,7 +622,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       setImageHeight(preset?.height || window.localStorage.getItem("media2api:image_last_height") || "1024");
       setImageModel(storedModel || "gpt-image-2");
       setImageQuality(normalizeImageQuality(storedModel || "gpt-image-2", storedQuality));
-      setImageCount(storedCount ? clampImageCount(storedCount) : "1");
 
       const items = await listImageConversations();
       const normalizedItems = await recoverConversationHistory(items);
@@ -662,7 +653,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setImageHeight,
     setImageQuality,
     setImageModel,
-    setImageCount,
     setConversations,
     setSelectedConversationId,
     setIsLoadingHistory,
@@ -883,12 +873,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     window.localStorage.setItem(IMAGE_QUALITY_STORAGE_KEY, qualityForModel);
     window.localStorage.setItem(IMAGE_MODEL_STORAGE_KEY, imageModel);
   }, [imageRatio, imageTier, imageWidth, imageHeight, qualityForModel, imageModel, isLoadingHistory]);
-
-  useEffect(() => {
-    if (typeof window !== "undefined" && parsedCount > 0) {
-      window.localStorage.setItem(IMAGE_COUNT_STORAGE_KEY, String(parsedCount));
-    }
-  }, [parsedCount]);
 
   useEffect(() => {
     if (selectedConversationId && !conversations.some((conversation) => conversation.id === selectedConversationId)) {
@@ -1164,7 +1148,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
     setSelectedConversationId(conversationId);
     setImagePrompt(turn.prompt);
-    setImageCount(String(Math.max(1, turn.count || turn.images.length || 1)));
     setImageRatio(turn.ratio);
     setImageTier(turn.tier);
     const parsedSize = parseImageSize(turn.size);
@@ -1351,7 +1334,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
       const now = new Date().toISOString();
       const nextTurnId = createId();
-      const count = Math.max(1, sourceTurn.count || sourceTurn.images.length || 1);
+      const count = 1;
       const nextTurn: ImageTurn = {
         id: nextTurnId,
         prompt: sourceTurn.prompt,
@@ -1492,12 +1475,12 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       model: imageModel,
       mode: effectiveImageMode,
       referenceImages: effectiveImageMode === "edit" ? referenceImages : [],
-      count: parsedCount,
+      count: 1,
       size: imageSize,
       ratio: imageRatio,
       tier: imageTier,
       quality: qualityForModel,
-      images: createLoadingImages(turnId, parsedCount),
+      images: createLoadingImages(turnId, 1),
       createdAt: now,
       status: "queued",
     };
@@ -1647,7 +1630,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
           <ImageComposer
             prompt={imagePrompt}
-            imageCount={imageCount}
             imageRatio={imageRatio}
             imageTier={imageTier}
             imageWidth={imageWidth}
@@ -1661,7 +1643,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             textareaRef={textareaRef}
             fileInputRef={fileInputRef}
             onPromptChange={setImagePrompt}
-            onImageCountChange={(value) => setImageCount(value ? clampImageCount(value) : "")}
             onImageRatioChange={setImageRatio}
             onImageTierChange={setImageTier}
             onImageWidthChange={setImageWidth}

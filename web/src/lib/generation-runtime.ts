@@ -118,6 +118,7 @@ export async function fetchRuntimeTasks() {
 }
 
 export async function createImageTaskBatch(taskIds: string[], files: File[], prompt: string, model: string, size: string, quality: string) {
+  if (taskIds.length !== 1) throw new Error("每次请求仅支持生成 1 张图片，不支持批量生成");
   const fields = { client_task_id: `batch:${taskIds[0]}`, client_task_ids: taskIds, prompt, model, size, quality };
   let body: FormData | typeof fields = fields;
   if (files.length) {
