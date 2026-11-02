@@ -11,6 +11,7 @@ from api.support import require_admin, require_identity, resolve_image_base_url
 from services.content_filter import check_request, request_shape, request_text
 from services.editable_file_task_service import editable_file_task_service
 from services.log_service import LoggedCall
+from services.providers.registry import conversation_handler
 from services.protocol import (
     anthropic_v1_messages,
     openai_v1_chat_complete,
@@ -74,8 +75,6 @@ async def filter_or_log(call: LoggedCall, text: str) -> None:
     try:
         await run_in_threadpool(check_request, text)
     except HTTPException as exc:
-        from services.generation_protocol import record_image_rejection
-        record_image_rejection(call.identity, call.endpoint, call.request_params or {"model": call.model}, exc)
         call.log("调用失败", status="failed", error=str(exc.detail))
         raise
 
@@ -103,6 +102,14 @@ def create_router() -> APIRouter:
 
     @router.get("/v1/models")
     async def list_models(authorization: str | None = Header(default=None)):
+        require_identity(authorization)
+        try:
+            return await run_in_threadpool(openai_v1_models.list_all_models)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail={"error": "模型目录读取失败，请稍后重试"}) from exc
+
+    @router.get("/api/image-models")
+    async def list_image_models(authorization: str | None = Header(default=None)):
         require_identity(authorization)
         try:
             return await run_in_threadpool(openai_v1_models.list_models)
@@ -161,7 +168,8 @@ def create_router() -> APIRouter:
             idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request),
         )
         await filter_or_log(call, request_preview)
-        return await call.run(openai_v1_chat_complete.handle, payload)
+        payload["_identity"] = identity
+        return await call.run(conversation_handler("chat", openai_v1_chat_complete.handle), payload)
 
     @router.post("/v1/responses")
     async def create_response(body: ResponseCreateRequest, request: Request, authorization: str | None = Header(default=None)):
@@ -179,7 +187,8 @@ def create_router() -> APIRouter:
             idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request),
         )
         await filter_or_log(call, request_preview)
-        return await call.run(openai_v1_response.handle, payload)
+        payload["_identity"] = identity
+        return await call.run(conversation_handler("responses", openai_v1_response.handle), payload)
 
     @router.post("/v1/messages")
     async def create_message(
@@ -196,7 +205,8 @@ def create_router() -> APIRouter:
         call = LoggedCall(identity, "/v1/messages", model, "Messages", request_text=request_preview,
                           idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request))
         await filter_or_log(call, request_preview)
-        return await call.run(anthropic_v1_messages.handle, payload, sse="anthropic")
+        payload["_identity"] = identity
+        return await call.run(conversation_handler("messages", anthropic_v1_messages.handle), payload, sse="anthropic")
 
     @router.post("/v1/search")
     async def search(body: SearchRequest, request: Request, authorization: str | None = Header(default=None)):

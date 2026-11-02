@@ -24,44 +24,12 @@ function numberRecord(value: unknown): Record<string, number | null> {
   return result;
 }
 
-function strings(value: unknown): string[] {
-  if (!Array.isArray(value) || !value.every((item): item is string => typeof item === "string")) throw new Error("统计筛选项格式不正确");
-  return value;
-}
-
 function requireNumbers(source: Record<string, unknown>, keys: string[], nullable: string[] = []) {
   for (const key of keys) {
     const value = source[key];
     if (value === null && nullable.includes(key)) continue;
     if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(`运行数据 ${key} 无效`);
   }
-}
-
-export function parseStatistics(value: unknown) {
-  const source = record(value);
-  const live = record(source.live);
-  const filters = record(source.filters);
-  const summary = record(source.summary);
-  if (live.recovering === undefined) live.recovering = live.uncertain;
-  if (summary.recovering === undefined) summary.recovering = summary.uncertain;
-  requireNumbers(live, ["recovering"]);
-  requireNumbers(summary, ["recovering"]);
-  requireNumbers(live, ["running", "queued", "uncertain", "cooldown_accounts", "global_concurrency", "max_waiting_images"]);
-  const nullable = ["platform_success_rate", "queue_p50", "queue_p95", "generation_p50", "generation_p95"];
-  requireNumbers(summary, ["requests", "successful_images", "partial_success", "failed", "cancelled", "uncertain", "platform_failures", "invalid_request", "content_rejected", "local_rejection", ...nullable], nullable);
-  if (typeof summary.platform_success_rate === "number" && summary.platform_success_rate > 1) throw new Error("平台成功率无效");
-  const keys = Array.isArray(live.keys) ? live.keys.map((value) => {
-    const item = record(value);
-    if (item.recovering === undefined) item.recovering = item.uncertain;
-    if (typeof item.key_id !== "string") throw new Error("Key 占用格式不正确");
-    requireNumbers(item, ["running", "queued", "uncertain", "recovering", "concurrency_limit"]);
-    return { key_id: item.key_id, values: numberRecord(item) };
-  }) : [];
-  return { summary: numberRecord(summary), live: numberRecord(live), keys, models: strings(filters.models), keyIds: strings(filters.keys) };
-}
-
-export async function fetchRuntimeStatistics(filters: { days: string; model: string; channel: string; key_id: string }) {
-  return parseStatistics(await httpRequest<unknown>(`/api/runtime/statistics?${new URLSearchParams(filters)}`));
 }
 
 export async function fetchImageQuota() {
@@ -80,10 +48,6 @@ export async function clearImageCooldown(accountId: string) {
 
 export async function cancelImageTask(taskId: string) {
   await httpRequest<unknown>(`/api/image-tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
-}
-
-export async function endUncertainTask(taskId: string) {
-  await httpRequest<unknown>(`/api/runtime/tasks/${encodeURIComponent(taskId)}/end`, { method: "POST" });
 }
 
 function isImageTask(value: unknown): value is ImageTask {
@@ -111,10 +75,6 @@ export function parseTasks(value: unknown): ImageTask[] {
   const source = record(value);
   if (!Array.isArray(source.items) || !source.items.every(isImageTask)) throw new Error("图片任务格式不正确");
   return source.items;
-}
-
-export async function fetchRuntimeTasks() {
-  return parseTasks(await httpRequest<unknown>("/api/runtime/tasks"));
 }
 
 export async function createImageTaskBatch(taskIds: string[], files: File[], prompt: string, model: string, size: string, quality: string) {

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, Query
+from fastapi import APIRouter, Header
 from fastapi.concurrency import run_in_threadpool
 
 from api.support import require_identity, require_admin
 from services.generation_runtime import get_generation_runtime
-from services.generation_statistics import runtime_statistics
 
 
 def create_router() -> APIRouter:
@@ -27,17 +26,6 @@ def create_router() -> APIRouter:
     async def end(task_id: str, authorization: str | None = Header(default=None)):
         identity = require_admin(authorization)
         return await run_in_threadpool(get_generation_runtime().change_task, identity, task_id, "end")
-
-    @router.get("/api/runtime/tasks")
-    async def tasks(authorization: str | None = Header(default=None)):
-        identity = require_admin(authorization)
-        return {"items": get_generation_runtime().jobs(identity, all_users=True)}
-
-    @router.get("/api/runtime/statistics")
-    async def statistics(days: int = Query(default=1, ge=1, le=30), model: str = "", channel: str = "", key_id: str = "", authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        from services.account_service import account_service
-        return await run_in_threadpool(runtime_statistics, get_generation_runtime(), days=days, model=model, channel=channel, key_id=key_id, accounts=account_service.list_accounts())
 
     @router.post("/api/accounts/{account_id}/clear-image-cooldown")
     async def clear(account_id: str, authorization: str | None = Header(default=None)):

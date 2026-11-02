@@ -5,6 +5,7 @@ import { ArrowDown, History, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
+import { CreativeTabs } from "@/components/creative-tabs";
 import { ImageResults, type ImageLightboxItem } from "@/app/image/components/image-results";
 import { ImageSidebar } from "@/app/image/components/image-sidebar";
 import { ImageLightbox } from "@/components/image-lightbox";
@@ -1520,8 +1521,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <>
-      <section className="mx-auto grid h-[calc(100dvh-6.5rem)] min-h-0 w-full max-w-[1380px] grid-cols-1 gap-2 overflow-hidden px-0 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:h-[calc(100dvh-5.25rem)] sm:gap-3 sm:px-3 sm:pb-6 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <div className="hidden h-full min-h-0 border-r border-stone-200/70 pr-3 lg:block">
+      <div className="creative-workspace flex flex-col gap-4"><div><CreativeTabs /></div>
+      <section className="mx-auto grid min-h-0 w-full flex-1 grid-cols-1 gap-3 overflow-hidden pb-[env(safe-area-inset-bottom)] xl:grid-cols-[200px_minmax(0,1fr)]">
+        <div className="hidden h-full min-h-0 border-r border-border/60 pr-3 xl:block">
           <ImageSidebar
             conversations={conversations}
             isLoadingHistory={isLoadingHistory}
@@ -1567,7 +1569,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         </Dialog>
 
         <div className="flex min-h-0 flex-col gap-2 sm:gap-4">
-          <div className="flex items-center justify-between gap-2 px-1 lg:hidden">
+          <div className="flex items-center justify-between gap-2 px-1 xl:hidden">
             <Button
               variant="outline"
               className="h-10 flex-1 rounded-2xl border-stone-200 bg-white/90 text-stone-700 shadow-sm"
@@ -1659,6 +1661,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           />
         </div>
       </section>
+      </div>
 
       <ImageLightbox
         images={lightboxImages}

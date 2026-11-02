@@ -188,7 +188,7 @@ export function ImageComposer({
 
   return (
     <div className="shrink-0 flex justify-center px-1 sm:px-0">
-      <div style={{ width: "min(980px, 100%)" }}>
+      <div style={{ width: "min(768px, 100%)" }}>
         <input
           ref={fileInputRef}
           type="file"
@@ -237,7 +237,7 @@ export function ImageComposer({
 
         <div
           className={cn(
-            "overflow-hidden rounded-[24px] border border-stone-200 bg-white shadow-[0_14px_60px_-42px_rgba(15,23,42,0.45)] transition dark:border-white/10 dark:bg-stone-950/80 sm:rounded-[32px] sm:shadow-none",
+            "composer overflow-hidden transition-colors",
             isDraggingImage && "border-stone-900 bg-stone-50",
           )}
         >
@@ -269,12 +269,12 @@ export function ImageComposer({
                   : "输入你想要生成的画面，也可直接粘贴图片"
               }
               onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
                   void onSubmit();
                 }
               }}
-              className="min-h-[82px] resize-none rounded-[24px] border-0 bg-transparent px-4 pt-4 pb-2 text-[15px] leading-6 text-stone-900 shadow-none placeholder:text-stone-400 focus-visible:ring-0 dark:text-stone-100 dark:placeholder:text-stone-500 sm:min-h-[148px] sm:rounded-[32px] sm:px-6 sm:pt-6 sm:pb-20 sm:leading-7"
+              className="min-h-24 resize-none rounded-none border-0 bg-transparent px-4 py-4 text-sm leading-6 text-foreground shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
             />
             {isDraggingImage ? (
               <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[24px] border-2 border-dashed border-stone-900 bg-white/85 text-sm font-medium text-stone-900 backdrop-blur-[1px] sm:rounded-[32px]">
@@ -285,7 +285,7 @@ export function ImageComposer({
               </div>
             ) : null}
 
-            <div className="rounded-b-[24px] border-t border-stone-100 bg-white px-3 pb-3 pt-2 dark:border-white/10 dark:bg-stone-950/95 sm:absolute sm:inset-x-0 sm:bottom-0 sm:rounded-b-none sm:border-t-0 sm:bg-gradient-to-t sm:from-white sm:via-white/95 sm:to-transparent sm:px-6 sm:pb-4 sm:pt-6 sm:dark:from-stone-950 sm:dark:via-stone-950/95 sm:dark:to-stone-950/0" onClick={(event) => event.stopPropagation()}>
+            <div className="bg-transparent px-3 pb-3 pt-1" onClick={(event) => event.stopPropagation()}>
               <div className="flex items-end justify-between gap-2 sm:gap-3">
                 <div className="hide-scrollbar flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:gap-3 sm:overflow-visible sm:pb-0">
                   <Button

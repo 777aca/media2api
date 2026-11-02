@@ -8,7 +8,6 @@ from unittest import mock
 from services.generation_context import GenerationContext, checkpoint
 from services.generation_errors import GenerationRuntimeError
 from services.generation_runtime import DEFAULT_QUEUE, GenerationRuntime
-from services.generation_statistics import runtime_statistics
 from services.protocol import conversation
 from services.protocol.conversation import ConversationRequest, ImageOutput
 from test.test_account_scheduling import SchedulingTestCase
@@ -56,8 +55,6 @@ class UnifiedSchedulingTests(SchedulingTestCase):
             self.assertEqual(self.runtime._active, {})
             self.assertEqual(self.calls, [])
             self.assertTrue(all(row["started"] is None and row["status"] == "queued" for row in self.state(job)))
-            live = runtime_statistics(self.runtime)["live"]
-            self.assertEqual((live["running"], live["queued"]), (0, 2))
             with self.assertRaises(GenerationRuntimeError) as full:
                 self.submit("b")
             self.assertEqual(full.exception.code, "image_queue_full")

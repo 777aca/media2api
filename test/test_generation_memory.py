@@ -9,7 +9,6 @@ import unittest
 from unittest import mock
 
 from services.generation_runtime import DEFAULT_QUEUE, GenerationRuntime
-from services.generation_statistics import runtime_statistics
 from services.generation_store import GenerationStore
 from services.image_call_logging import runtime_call_details
 from services.protocol.conversation import ConversationRequest, ImageGenerationError, ImageOutput
@@ -40,7 +39,7 @@ class GenerationMemoryTests(unittest.TestCase):
                 store.finish(child["id"], status="success", output=[asdict(output)])
         return children
 
-    def test_statistics_lists_and_diagnostics_never_select_result_body(self):
+    def test_task_lists_and_diagnostics_never_select_result_body(self):
         self.job(count=2, client_ids=["first", "second"])
         denied = []
 
@@ -52,7 +51,6 @@ class GenerationMemoryTests(unittest.TestCase):
 
         self.runtime.store.db.set_authorizer(authorize)
         try:
-            stats = runtime_statistics(self.runtime)
             listed = self.runtime.jobs(self.identity)
             admin = self.runtime.jobs({"id": "admin"}, all_users=True)
             with mock.patch("services.generation_runtime.get_generation_runtime", return_value=self.runtime):
@@ -60,7 +58,6 @@ class GenerationMemoryTests(unittest.TestCase):
         finally:
             self.runtime.store.db.set_authorizer(None)
         self.assertEqual(denied, [])
-        self.assertEqual(stats["summary"]["successful_images"], 2)
         self.assertEqual([item["id"] for item in listed], ["first", "second"])
         self.assertEqual(len(admin[0]["data"]), 2)
         self.assertEqual(len(diagnostics["image_tasks"]), 2)
@@ -132,7 +129,7 @@ class GenerationMemoryTests(unittest.TestCase):
         history = self.runtime.jobs(self.identity, ["expired"])[0]
         self.assertEqual(history["status"], "success")
         self.assertEqual(history["data"][0]["url"], self.images[0]["url"])
-        self.assertEqual(runtime_statistics(self.runtime, days=100)["summary"]["successful_images"], 3)
+        self.assertEqual(sum(row["images"] for row in settlements), 3)
         store.finish(completed[0]["id"], status="success", output=[{"kind": "result", "data": self.images}])
         self.assertEqual(store.quota("synthetic"), quota)
         with self.assertRaises(ImageGenerationError) as expired:

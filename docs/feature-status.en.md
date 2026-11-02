@@ -43,4 +43,4 @@
 | 服务端图片 URL 缓存 | ✅  | 已实现。 |
 | `rt_token` 刷新 | ❌  | 待实现。 |
 | 代理配置功能 | ✅  | 已支持网页端配置全局 HTTP / HTTPS / SOCKS5 / SOCKS5H 代理，并应用到出站请求。 |
-| Anthropic 协议支持 | ❌  | 待实现。 |
+| Anthropic 协议支持 | ⚠️ | `/v1/messages` 已有文本与工具调用的部分兼容实现，并非完整 Anthropic API。 |

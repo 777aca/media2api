@@ -123,6 +123,10 @@ def split_image_model(model: object) -> tuple[str | None, str | None]:
 
 
 def is_supported_image_model(model: object) -> bool:
+    from services.providers.grok_catalog import MODELS
+    grok_model = MODELS.get(str(model or "").removeprefix("Web/"))
+    if grok_model:
+        return grok_model.capability in {"image", "image_edit"}
     _, base_model = split_image_model(model)
     return base_model is not None
 

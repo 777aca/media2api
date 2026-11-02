@@ -10,15 +10,24 @@ export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
 export type ImageModel = string;
 export type AuthRole = "admin" | "user";
-export type ImageStorageMode = "local" | "webdav" | "both";
+export type ImageStorageProvider = "webdav" | "s3";
+export type ImageStorageMode = "local" | "webdav" | "s3" | "both";
 
 export type ImageStorageSettings = {
   enabled: boolean;
+  provider: ImageStorageProvider;
   mode: ImageStorageMode;
   webdav_url: string;
   webdav_username: string;
   webdav_password: string;
   webdav_root_path: string;
+  s3_account_id: string;
+  s3_endpoint: string;
+  s3_region: string;
+  s3_access_key_id: string;
+  s3_secret_access_key: string;
+  s3_bucket: string;
+  s3_prefix: string;
   public_base_url: string;
 };
 
@@ -353,7 +362,7 @@ export async function fetchAccounts() {
 }
 
 export async function fetchModels() {
-  return httpRequest<ModelListResponse>("/v1/models");
+  return httpRequest<ModelListResponse>("/api/image-models");
 }
 
 export async function fetchModelCatalog() {

@@ -7,7 +7,8 @@ from unittest import mock
 
 from PIL import Image
 
-from services.image_storage_service import ImageStorageService
+from services.config import _normalize_image_storage_settings, _validate_image_storage_settings
+from services.image_storage_service import ImageStorageService, S3ImageClient
 
 
 def png_bytes() -> bytes:
@@ -41,6 +42,31 @@ class FakeWebDAVClient:
         return {"ok": True, "status": 200, "error": None}
 
 
+class FakeS3Client:
+    uploaded: dict[str, bytes] = {}
+    deleted: list[str] = []
+
+    def __init__(self, _settings):
+        pass
+
+    def put(self, rel: str, payload: bytes) -> str:
+        self.uploaded[rel] = payload
+        return f"https://r2.example.test/bucket/media2api/images/{rel}"
+
+    def get(self, rel: str) -> bytes:
+        return self.uploaded[rel]
+
+    def delete(self, rel: str) -> bool:
+        self.deleted.append(rel)
+        self.uploaded.pop(rel, None)
+        return True
+
+    def test(self) -> dict[str, object]:
+        self.put(".media2api_s3_test.txt", b"media2api s3 test\n")
+        self.delete(".media2api_s3_test.txt")
+        return {"ok": True, "status": 200, "error": None}
+
+
 class ImageStorageServiceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -49,11 +75,19 @@ class ImageStorageServiceTests(unittest.TestCase):
         self.images_dir = self.data_dir / "images"
         self.settings = {
             "enabled": False,
+            "provider": "webdav",
             "mode": "local",
             "webdav_url": "",
             "webdav_username": "",
             "webdav_password": "",
             "webdav_root_path": "media2api/images",
+            "s3_account_id": "",
+            "s3_endpoint": "",
+            "s3_region": "auto",
+            "s3_access_key_id": "",
+            "s3_secret_access_key": "",
+            "s3_bucket": "",
+            "s3_prefix": "media2api/images",
             "public_base_url": "",
         }
         self.config_patcher = mock.patch("services.image_storage_service.config")
@@ -65,6 +99,8 @@ class ImageStorageServiceTests(unittest.TestCase):
         self.mock_config.get_image_storage_settings.side_effect = lambda: dict(self.settings)
         FakeWebDAVClient.uploaded = {}
         FakeWebDAVClient.deleted = []
+        FakeS3Client.uploaded = {}
+        FakeS3Client.deleted = []
 
     def service(self) -> ImageStorageService:
         return ImageStorageService(self.data_dir / "image_index.json")
@@ -91,6 +127,88 @@ class ImageStorageServiceTests(unittest.TestCase):
         self.assertFalse((self.images_dir / stored.rel).exists())
         self.assertIn(stored.rel, FakeWebDAVClient.uploaded)
         self.assertEqual(payload, FakeWebDAVClient.uploaded[stored.rel])
+
+    def test_s3_mode_uploads_without_local_file_and_returns_public_r2_url(self):
+        self.settings.update({
+            "enabled": True,
+            "provider": "s3",
+            "mode": "s3",
+            "s3_account_id": "acc123",
+            "s3_access_key_id": "ak123",
+            "s3_secret_access_key": "sk123",
+            "s3_bucket": "images-bucket",
+            "s3_prefix": "media2api/images",
+            "public_base_url": "https://pub-xxx.r2.dev",
+        })
+        with mock.patch("services.image_storage_service.S3ImageClient", FakeS3Client):
+            stored = self.service().save(png_bytes(), "http://app.test")
+            payload = self.service().get_bytes(stored.rel)
+
+        self.assertEqual(stored.storage, "s3")
+        self.assertFalse((self.images_dir / stored.rel).exists())
+        self.assertIn(stored.rel, FakeS3Client.uploaded)
+        self.assertEqual(payload, FakeS3Client.uploaded[stored.rel])
+        self.assertEqual(stored.url, f"https://pub-xxx.r2.dev/media2api/images/{stored.rel}")
+
+    def test_s3_both_mode_and_sync_all(self):
+        image = png_bytes()
+        image_path = self.images_dir / "2026" / "11" / "02" / "sample.png"
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(image)
+
+        self.settings.update({
+            "enabled": True,
+            "provider": "s3",
+            "mode": "both",
+            "s3_account_id": "acc123",
+            "s3_access_key_id": "ak123",
+            "s3_secret_access_key": "sk123",
+            "s3_bucket": "images-bucket",
+            "s3_prefix": "media2api/images",
+            "public_base_url": "https://pub-xxx.r2.dev/media2api/images",
+        })
+        with mock.patch("services.image_storage_service.S3ImageClient", FakeS3Client):
+            sync_result = self.service().sync_all()
+            test_result = self.service().test_webdav()
+            items = self.service().list_items("http://app.test")
+
+        self.assertEqual(sync_result, {"uploaded": 1, "skipped": 0, "failed": 0})
+        self.assertTrue(test_result["ok"])
+        self.assertIn(".media2api_s3_test.txt", FakeS3Client.deleted)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["storage"], "both")
+        self.assertEqual(items[0]["url"], "https://pub-xxx.r2.dev/media2api/images/2026/11/02/sample.png")
+
+    def test_s3_client_normalizes_cloudflare_r2_endpoint_and_signs_request(self):
+        client = S3ImageClient({
+            "s3_endpoint": "https://acc123.r2.cloudflarestorage.com/my-bucket",
+            "s3_bucket": "my-bucket",
+            "s3_region": "auto",
+            "s3_access_key_id": "AKID",
+            "s3_secret_access_key": "SECRET",
+            "s3_prefix": "media2api/images",
+        })
+        self.assertEqual(client.endpoint, "https://acc123.r2.cloudflarestorage.com")
+        self.assertEqual(client.object_key("2026/11/02/a.png"), "media2api/images/2026/11/02/a.png")
+        _, headers = client._aws_v4_headers("PUT", "/my-bucket/media2api/images/2026/11/02/a.png", body=b"abc")
+        self.assertIn("AWS4-HMAC-SHA256 Credential=AKID/", headers["authorization"])
+
+    def test_config_validation_for_s3_and_webdav(self):
+        normalized = _normalize_image_storage_settings({
+            "enabled": True,
+            "provider": "r2",
+            "mode": "webdav",
+            "s3_account_id": "acc123",
+            "s3_access_key_id": "ak123",
+            "s3_secret_access_key": "sk123",
+            "s3_bucket": "images",
+        })
+        self.assertEqual(normalized["provider"], "s3")
+        self.assertEqual(normalized["mode"], "s3")
+        _validate_image_storage_settings(normalized)
+
+        with self.assertRaisesRegex(ValueError, "Bucket"):
+            _validate_image_storage_settings({**normalized, "s3_bucket": ""})
 
     def test_list_items_ignores_non_image_files(self):
         image = png_bytes()

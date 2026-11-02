@@ -28,6 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   createAccounts,
   finishOAuthLogin,
@@ -43,6 +44,10 @@ type ImportMethod = "menu" | "token" | "session" | "codex-auth" | "account-json"
 
 type AccountImportDialogProps = {
   disabled?: boolean;
+  grokBusy: boolean;
+  grokError: string;
+  onGrokImport: (input: string) => Promise<boolean>;
+  onOpenChange: (open: boolean) => void;
   onImported: (items: Account[]) => void;
 };
 
@@ -174,9 +179,12 @@ function MethodCard({
   );
 }
 
-export function AccountImportDialog({ disabled, onImported }: AccountImportDialogProps) {
+export function AccountImportDialog({ disabled, onImported, grokBusy, grokError, onGrokImport, onOpenChange }: AccountImportDialogProps) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(false);
+  const [platform, setPlatform] = useState<"" | "openai" | "grok">("");
+  const [grokInput, setGrokInput] = useState("");
+  const setOpen = (value: boolean) => { setOpenState(value); onOpenChange(value); };
   const [method, setMethod] = useState<ImportMethod>("menu");
   const [tokenInput, setTokenInput] = useState("");
   const [sessionInput, setSessionInput] = useState("");
@@ -193,6 +201,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   const accountJsonInputRef = useRef<HTMLInputElement | null>(null);
 
   const resetState = () => {
+    setPlatform("");
+    setGrokInput("");
     setMethod("menu");
     setTokenInput("");
     setSessionInput("");
@@ -206,6 +216,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   };
 
   const handleOpenChange = (nextOpen: boolean) => {
+    if (isSubmitting || grokBusy || oauthStarting) return;
     setOpen(nextOpen);
     if (!nextOpen) {
       resetState();
@@ -578,9 +589,9 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             <div className="font-medium text-stone-800">操作步骤</div>
             <ol className="list-decimal pl-5 space-y-1">
               <li>（可选）填写你 ChatGPT 账号的邮箱，登录页会预填。</li>
-              <li>点击下方"打开授权页面"，在新标签里登录自己的 ChatGPT 账号。</li>
+              <li>点击下方“打开授权页面”，在新标签里登录自己的 ChatGPT 账号。</li>
               <li>登录完成后浏览器会跳到 <code className="rounded bg-stone-200 px-1">platform.openai.com/auth/callback?code=...</code>。立刻从地址栏复制整段 URL（或开 F12 在 Network 里抓到 callback 那一行，右键 Copy → Copy URL）。</li>
-              <li>把 callback URL 粘到下面输入框，点"完成导入"。</li>
+              <li>把 callback URL 粘到下面输入框，点“完成导入”。</li>
             </ol>
           </div>
           <div className="space-y-2">
@@ -655,7 +666,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             <div className="font-medium">注意</div>
             <div>
               授权码（code）只能使用一次。如果浏览器的 callback 页加载完成、显示了 OpenAI 的错误页，那 code 大概率已经被消耗，
-              请点击"重新生成"再走一次。整个流程在 10 分钟内完成即可。
+              请点击“重新生成”再走一次。整个流程在 10 分钟内完成即可。
             </div>
           </div>
         </div>
@@ -789,24 +800,33 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     );
   };
 
-  const footerDisabled = disabled || isSubmitting;
+  const footerDisabled = disabled || isSubmitting || grokBusy || oauthStarting;
+  const handleGrokImport = async () => {
+    if (footerDisabled || !grokInput.trim()) return;
+    setIsSubmitting(true);
+    try {
+      if (await onGrokImport(grokInput)) { setOpen(false); resetState(); }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "导入 Grok 账号失败");
+    } finally { setIsSubmitting(false); }
+  };
 
   return (
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <Button
           className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800"
-          onClick={() => setOpen(true)}
+          onClick={() => { resetState(); setOpen(true); }}
           disabled={disabled}
         >
           <Upload className="size-4" />
-          导入
+          导入账号
         </Button>
-        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
+        <DialogContent showCloseButton={false} className="max-h-[85dvh] overflow-y-auto rounded-2xl p-6">
           <DialogHeader className="gap-2">
             <DialogTitle>
-              {method === "menu"
-                ? "导入账户"
+              {!platform ? "导入账号" : platform === "grok" ? "导入 Grok 账号" : method === "menu"
+                ? "导入 ChatGPT / Codex 账号"
                 : method === "token"
                   ? "导入 Access Token"
                   : method === "session"
@@ -818,7 +838,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                       : "导入账号 JSON"}
             </DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              {method === "menu"
+              {!platform ? "先选择平台，再使用对应的方式导入账号。" : platform === "grok" ? "每行粘贴一个 SSO，或粘贴 grok2api 导出的 Web 账号 JSON。" : method === "menu"
                 ? "选择一种导入方式。导入成功后会自动拉取邮箱、类型和额度。"
                 : method === "token"
                   ? "支持粘贴或 TXT 上传：每行一个 Token，或邮箱----密码----二步验证密钥----Access Token。"
@@ -832,18 +852,35 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             </DialogDescription>
           </DialogHeader>
 
-          {renderMethodBody()}
+          <div className="space-y-2">
+            <label htmlFor="import-platform" className="text-sm font-medium">平台</label>
+            <Select value={platform} disabled={footerDisabled} onValueChange={value => {
+              if (value !== "openai" && value !== "grok") return;
+              resetState(); setPlatform(value);
+            }}>
+              <SelectTrigger id="import-platform" aria-label="导入平台" className="w-full"><SelectValue placeholder="请选择平台" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="openai">ChatGPT / Codex</SelectItem>
+                <SelectItem value="grok">Grok</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {platform === "openai" ? renderMethodBody() : platform === "grok" ? <div className="space-y-3">
+            <Textarea aria-label="Grok SSO 账号" value={grokInput} disabled={footerDisabled} onChange={event => setGrokInput(event.target.value)} placeholder="sso=… 或账号 JSON" autoComplete="off" spellCheck={false} className="min-h-48 font-mono text-xs" />
+            {grokError && <p role="alert" className="text-xs text-destructive">{grokError}</p>}
+          </div> : null}
 
           <DialogFooter className="pt-2">
             <Button
               variant="secondary"
               className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
-              onClick={() => setOpen(false)}
+              onClick={() => handleOpenChange(false)}
               disabled={footerDisabled}
             >
               取消
             </Button>
-            {method === "token" ? (
+            {platform === "grok" && <Button onClick={() => void handleGrokImport()} disabled={footerDisabled || !grokInput.trim()}>{(isSubmitting || grokBusy) && <LoaderCircle className="size-4 animate-spin" />}导入账号</Button>}
+            {platform === "openai" && method === "token" ? (
               <Button
                 className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
                 onClick={() => void handleImportTokenText()}
@@ -853,7 +890,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 导入账号
               </Button>
             ) : null}
-            {method === "session" ? (
+            {platform === "openai" && method === "session" ? (
               <Button
                 className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
                 onClick={() => void handleImportSessionJson()}
@@ -863,7 +900,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 导入 JSON
               </Button>
             ) : null}
-            {method === "codex-auth" ? (
+            {platform === "openai" && method === "codex-auth" ? (
               <Button
                 className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
                 onClick={() => void handleImportCodexAuthJson()}
@@ -873,7 +910,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 导入 JSON
               </Button>
             ) : null}
-            {method === "oauth" ? (
+            {platform === "openai" && method === "oauth" ? (
               <Button
                 className={cn(
                   "h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800",
@@ -886,7 +923,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 完成导入
               </Button>
             ) : null}
-            {method === "account-json" ? (
+            {platform === "openai" && method === "account-json" ? (
               <Button
                 className={cn(
                   "h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800",

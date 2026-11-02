@@ -11,7 +11,7 @@ from urllib.parse import quote
 from services.account_service import account_service
 from services.config import DATA_DIR
 from services.content_filter import request_text
-from services.log_service import LOG_TYPE_CALL, log_service
+from services.log_service import LOG_TYPE_CALL, log_service, log_timestamp
 from services.request_log import sanitize_request_parameters
 from services.openai_backend_api import EDITABLE_FILE_MODEL, OpenAIBackendAPI
 from utils.helper import new_uuid
@@ -243,8 +243,8 @@ class EditableFileTaskService:
             "role": identity.get("role"),
             "endpoint": f"/v1/{kind}/generations",
             "model": EDITABLE_FILE_MODEL,
-            "started_at": datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S"),
-            "ended_at": _now_iso(),
+            "started_at": log_timestamp(started),
+            "ended_at": log_timestamp(),
             "duration_ms": int((time.time() - started) * 1000),
             "status": status,
         }

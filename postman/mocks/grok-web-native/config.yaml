@@ -1,0 +1,10 @@
+version: 1
+name: grok-web-native
+slug: grok-web-native
+protocol: http
+port: 4564
+interceptRequests: true
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true

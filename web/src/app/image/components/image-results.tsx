@@ -123,20 +123,14 @@ export function ImageResults({
       <div className="flex h-full min-h-[260px] items-center justify-center text-center sm:min-h-[420px]">
         <div className="w-full max-w-4xl">
           <h1
-            className="text-2xl font-semibold tracking-tight text-stone-950 sm:text-3xl md:text-5xl"
-            style={{
-              fontFamily: '"Palatino Linotype","Book Antiqua","URW Palladio L","Times New Roman",serif',
-            }}
+            className="text-2xl font-medium tracking-tight text-foreground sm:text-3xl"
           >
-            Turn ideas into images
+            把灵感，变成画面
           </h1>
           <p
-            className="mx-auto mt-3 max-w-[280px] text-sm italic tracking-[0.01em] text-stone-500 sm:mt-4 sm:max-w-none sm:text-[15px]"
-            style={{
-              fontFamily: '"Palatino Linotype","Book Antiqua","URW Palladio L","Times New Roman",serif',
-            }}
+            className="mx-auto mt-3 max-w-sm text-sm leading-6 text-muted-foreground"
           >
-            在同一窗口里保留本地历史与任务状态，并从已有结果图继续发起新的无状态编辑。
+            描述你想看见的世界，或上传一张图片，继续探索新的可能。
           </p>
         </div>
       </div>

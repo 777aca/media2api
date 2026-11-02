@@ -24,8 +24,11 @@ class ModelsApiTests(unittest.TestCase):
         identities = {"test-user-key": {"id": "test-user", "name": "test", "role": "user"}}
         mock.patch.object(support_module.auth_service, "authenticate", side_effect=identities.get).start()
         self.get_catalog = mock.patch.object(ai_module.openai_v1_models, "get_catalog", return_value=self.catalog).start()
-        self.list_models = mock.patch.object(ai_module.openai_v1_models, "list_models", return_value={
+        self.list_models = mock.patch.object(ai_module.openai_v1_models, "list_all_models", return_value={
             "object": "list", "data": [{"id": "gpt-image-2.5-flare", "object": "model"}],
+        }).start()
+        self.list_image_models = mock.patch.object(ai_module.openai_v1_models, "list_models", return_value={
+            "object": "list", "data": [{"id": "gpt-image-2", "object": "model"}],
         }).start()
         app = FastAPI()
         app.include_router(ai_module.create_router())
@@ -61,6 +64,14 @@ class ModelsApiTests(unittest.TestCase):
         self.assertEqual(result["object"], "list")
         self.assertNotIn("source", result["data"][0])
         self.list_models.assert_called_once_with()
+
+    def test_image_workbench_uses_separate_image_only_catalog(self) -> None:
+        self.assertEqual(self.client.get("/api/image-models").status_code, 401)
+        response = self.client.get("/api/image-models", headers={"Authorization": "Bearer test-user-key"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"][0]["id"], "gpt-image-2")
+        self.list_image_models.assert_called_once_with()
+        self.list_models.assert_not_called()
 
     def test_unexpected_catalog_exception_is_redacted_at_http_boundary(self) -> None:
         self.get_catalog.side_effect = RuntimeError("private-access-token private-password")

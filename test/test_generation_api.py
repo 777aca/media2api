@@ -309,8 +309,16 @@ class GenerationAPITests(unittest.TestCase):
         conflict = self.client.post("/api/image-tasks/generations", headers=headers, json={**body, "prompt": "different"})
         self.assertEqual(conflict.status_code, 409)
 
-    def test_pre_admission_refusals_have_separate_statistics_without_charging(self):
+    def test_pre_admission_refusals_do_not_charge_or_change_old_statistics_data(self):
         item, headers = self.key(0)
+        self.runtime.store.db.execute(
+            "CREATE TABLE rejections (id INTEGER PRIMARY KEY, owner TEXT, model TEXT, channel TEXT, category TEXT, code TEXT, created REAL NOT NULL)"
+        )
+        self.runtime.store.db.execute(
+            "INSERT INTO rejections(owner,model,channel,category,code,created) VALUES (?,?,?,?,?,?)",
+            ("old-owner", "old-model", "web", "invalid_request", "old-code", 1),
+        )
+        old_rows = self.runtime.store.rows("SELECT * FROM rejections")
         invalid = self.client.post("/v1/images/generations", headers=headers, json={"prompt": ""})
         self.assertEqual(invalid.status_code, 422)
         with mock.patch.object(ai, "check_request", side_effect=HTTPException(400, {"error": "blocked", "code": "content_filter"})):
@@ -318,19 +326,37 @@ class GenerationAPITests(unittest.TestCase):
         self.assertEqual(denied.status_code, 400)
         rejected = self.client.post("/v1/images/generations", headers=headers, json={"prompt": "draw"})
         self.assertEqual(rejected.status_code, 429)
-        summary = self.client.get("/api/runtime/statistics", headers=self.admin).json()["summary"]
-        self.assertEqual((summary["requests"], summary["invalid_request"], summary["content_rejected"], summary["local_rejection"]), (3, 1, 1, 1))
-        self.assertIsNone(summary["platform_success_rate"])
-        self.assertEqual(self.runtime.store.quota(item["id"])["image_quota_used"], 0)
+        quota = self.runtime.store.quota(item["id"])
+        self.assertEqual((quota["image_quota_used"], quota["image_quota_reserved"]), (0, 0))
+        self.assertEqual(self.runtime.store.rows("SELECT * FROM rejections"), old_rows)
+        self.assertEqual(self.runtime.store.rows("SELECT id FROM jobs WHERE owner=?", (item["id"],)), [])
         self.assertEqual(self.calls, [])
+
+    def test_removed_operations_endpoints_are_unavailable(self):
+        self.assertEqual(self.client.get("/api/runtime/statistics", headers=self.admin).status_code, 404)
+        self.assertEqual(self.client.get("/api/runtime/tasks", headers=self.admin).status_code, 404)
+        self.assertEqual(self.runtime.store.rows("SELECT name FROM sqlite_master WHERE type='table' AND name='rejections'"), [])
+
+    def test_removed_endpoints_do_not_fall_back_to_web_html(self):
+        from api.app import create_app
+
+        index = self.root / "index.html"
+        index.write_text("<html>synthetic</html>", encoding="utf-8")
+        with mock.patch("api.app.resolve_web_asset", return_value=index):
+            client = TestClient(create_app())
+            try:
+                for path in ("/api/runtime/statistics", "/api/runtime/tasks"):
+                    self.assertEqual(client.get(path, headers=self.admin).status_code, 404)
+                self.assertEqual(client.get("/image/").status_code, 200)
+            finally:
+                client.close()
 
     def test_key_rotation_history_deletion_and_permissions(self):
         item, headers = self.key(2)
         response = self.client.post("/v1/images/generations", headers=headers, json={"prompt": "draw"})
         self.assertEqual(response.status_code, 200)
         task_id = response.headers["X-Image-Task-Id"]
-        self.assertEqual(self.client.get("/api/runtime/statistics", headers=headers).status_code, 403)
-        self.assertEqual(self.client.get("/api/runtime/tasks", headers=headers).status_code, 403)
+        self.assertEqual(self.client.post(f"/api/runtime/tasks/{task_id}/end", headers=headers).status_code, 403)
         self.assertEqual(self.client.post("/api/auth/users", headers=headers, json={}).status_code, 403)
         updated = self.client.post(f"/api/auth/users/{item['id']}", headers=self.admin, json={"key": "synthetic-new-key"})
         self.assertEqual(updated.json()["item"]["image_quota_used"], 1)

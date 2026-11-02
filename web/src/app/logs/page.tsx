@@ -194,7 +194,7 @@ function LogsContent() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-12"></TableHead>
-                  <TableHead>时间</TableHead>
+                  <TableHead>时间（UTC+8）</TableHead>
                   <TableHead>类型</TableHead>
                   {isCallLog ? <TableHead>令牌名称</TableHead> : null}
                   {isCallLog ? <TableHead>调用耗时</TableHead> : null}

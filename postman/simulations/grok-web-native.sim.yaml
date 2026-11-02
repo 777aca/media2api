@@ -1,0 +1,6 @@
+simulation: grok-web-native
+routing: path
+mocks:
+  - name: grok-web-native
+    routeKey: web
+    path: postman/mocks/grok-web-native

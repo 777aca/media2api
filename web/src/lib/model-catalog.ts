@@ -9,13 +9,14 @@ export type Model = {
 };
 
 export type CatalogModel = Model & {
-  source: "official" | "compatibility";
+  source: "official" | "compatibility" | "grok_web";
+  capabilities?: string[];
   channels?: ModelChannel[];
   display_name?: string;
   entry_kind?: "image_api" | "web_image";
 };
 
-export type ModelChannel = "web" | "codex";
+export type ModelChannel = "web" | "codex" | "grok_web";
 
 export type ModelCatalogSync = {
   status: "success" | "partial" | "failed";
@@ -50,7 +51,7 @@ function isCount(value: unknown): value is number {
 }
 
 function isModelChannel(value: unknown): value is ModelChannel {
-  return value === "web" || value === "codex";
+  return value === "web" || value === "codex" || value === "grok_web";
 }
 
 export function parseModelCatalogResponse(value: unknown): ModelCatalogResponse {
@@ -64,7 +65,8 @@ export function parseModelCatalogResponse(value: unknown): ModelCatalogResponse 
       typeof item.object !== "string" || typeof item.created !== "number" || !Number.isFinite(item.created) ||
       typeof item.owned_by !== "string" || !Array.isArray(item.permission) || typeof item.root !== "string" ||
       (item.parent !== null && typeof item.parent !== "string") ||
-      (item.source !== "official" && item.source !== "compatibility") ||
+      (item.source !== "official" && item.source !== "compatibility" && item.source !== "grok_web") ||
+      (item.capabilities !== undefined && (!Array.isArray(item.capabilities) || !item.capabilities.every(c => typeof c === "string"))) ||
       (item.display_name !== undefined && typeof item.display_name !== "string") ||
       (item.entry_kind !== undefined && item.entry_kind !== "image_api" && item.entry_kind !== "web_image") ||
       (item.channels !== undefined && (!Array.isArray(item.channels) || !item.channels.every(isModelChannel)))
@@ -80,6 +82,7 @@ export function parseModelCatalogResponse(value: unknown): ModelCatalogResponse 
       root: item.root,
       parent: item.parent,
       source: item.source,
+      ...(Array.isArray(item.capabilities) ? { capabilities: item.capabilities as string[] } : {}),
       ...(typeof item.display_name === "string" ? { display_name: item.display_name } : {}),
       ...(item.entry_kind === "image_api" || item.entry_kind === "web_image" ? { entry_kind: item.entry_kind } : {}),
       ...(Array.isArray(item.channels) ? { channels: [...new Set(item.channels.filter(isModelChannel))] } : {}),

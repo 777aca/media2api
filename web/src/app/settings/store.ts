@@ -25,6 +25,7 @@ import {
   type CPAPool,
   type CPARemoteFile,
   type ImageStorageMode,
+  type ImageStorageProvider,
   type ImageCalibrationSettings,
   type ImageStorageSettings,
   type ProxyRuntimeClearanceMode,
@@ -111,21 +112,20 @@ function normalizeConfig(rawConfig: SettingsConfig): SettingsConfig {
     ? config.default_thinking_effort as "standard" | "extended" | "max"
     : "auto";
   const imageStorage = typeof config.image_storage === "object" && config.image_storage
-    ? config.image_storage as ImageStorageSettings
-    : {
-      enabled: false,
-      mode: "local",
-      webdav_url: "",
-      webdav_username: "",
-      webdav_password: "",
-      webdav_root_path: "media2api/images",
-      public_base_url: "",
-    };
-  const imageStorageMode: ImageStorageMode = imageStorage.enabled && imageStorage.mode === "both"
-    ? "both"
-    : imageStorage.enabled && imageStorage.mode === "webdav"
-      ? "webdav"
-      : "local";
+    ? config.image_storage as Partial<ImageStorageSettings>
+    : {};
+  const imageStorageProvider: ImageStorageProvider = imageStorage.provider === "s3"
+    || imageStorage.mode === "s3"
+    || (Boolean(imageStorage.s3_bucket) && !imageStorage.webdav_url)
+    ? "s3"
+    : "webdav";
+  const imageStorageMode: ImageStorageMode = !imageStorage.enabled
+    ? "local"
+    : imageStorage.mode === "both"
+      ? "both"
+      : imageStorage.mode === "webdav" || imageStorage.mode === "s3"
+        ? (imageStorageProvider === "s3" ? "s3" : "webdav")
+        : "local";
   const backup = typeof config.backup === "object" && config.backup
     ? config.backup as BackupSettings
     : {
@@ -182,11 +182,19 @@ function normalizeConfig(rawConfig: SettingsConfig): SettingsConfig {
     },
     image_storage: {
       enabled: Boolean(imageStorage.enabled),
+      provider: imageStorageProvider,
       mode: imageStorageMode,
       webdav_url: String(imageStorage.webdav_url || ""),
       webdav_username: String(imageStorage.webdav_username || ""),
       webdav_password: String(imageStorage.webdav_password || ""),
       webdav_root_path: String(imageStorage.webdav_root_path || "media2api/images"),
+      s3_account_id: String(imageStorage.s3_account_id || ""),
+      s3_endpoint: String(imageStorage.s3_endpoint || ""),
+      s3_region: String(imageStorage.s3_region || "auto"),
+      s3_access_key_id: String(imageStorage.s3_access_key_id || ""),
+      s3_secret_access_key: String(imageStorage.s3_secret_access_key || ""),
+      s3_bucket: String(imageStorage.s3_bucket || ""),
+      s3_prefix: typeof imageStorage.s3_prefix === "string" ? imageStorage.s3_prefix : "media2api/images",
       public_base_url: String(imageStorage.public_base_url || ""),
     },
     proxy_runtime: normalizeProxyRuntime(config.proxy_runtime),
@@ -298,6 +306,7 @@ type SettingsStore = {
   setSensitiveWordsText: (value: string) => void;
   setAIReviewField: (key: "enabled" | "base_url" | "api_key" | "model" | "prompt", value: string | boolean) => void;
   setImageStorageField: (key: keyof ImageStorageSettings, value: string | boolean) => void;
+  copyBackupR2ToImageStorage: () => void;
   setProxyRuntimeField: <K extends keyof ProxyRuntimeSettings>(key: K, value: ProxyRuntimeSettings[K]) => void;
   setProxyRuntimeClearanceField: <K extends keyof ProxyRuntimeSettings["clearance"]>(key: K, value: ProxyRuntimeSettings["clearance"][K]) => void;
   setProxyRuntimeStatusCodesText: (value: string) => void;
@@ -408,6 +417,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
     set({ isSavingConfig: true });
     try {
+      const provider: ImageStorageProvider = config.image_storage?.provider === "s3" ? "s3" : "webdav";
+      const enabled = Boolean(config.image_storage?.enabled);
+      const rawMode = String(config.image_storage?.mode || "local");
+      const mode: ImageStorageMode = !enabled
+        ? "local"
+        : rawMode === "both"
+          ? "both"
+          : rawMode === "webdav" || rawMode === "s3"
+            ? (provider === "s3" ? "s3" : "webdav")
+            : "local";
       const data = await updateSettingsConfig({
         ...config,
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
@@ -440,12 +459,22 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
           prompt: String(config.ai_review?.prompt || "").trim(),
         },
         image_storage: {
-          enabled: Boolean(config.image_storage?.enabled),
-          mode: config.image_storage?.enabled && ["webdav", "both"].includes(String(config.image_storage?.mode)) ? config.image_storage.mode : "local",
+          enabled,
+          provider,
+          mode,
           webdav_url: String(config.image_storage?.webdav_url || "").trim(),
           webdav_username: String(config.image_storage?.webdav_username || "").trim(),
           webdav_password: String(config.image_storage?.webdav_password || "").trim(),
           webdav_root_path: String(config.image_storage?.webdav_root_path || "media2api/images").trim(),
+          s3_account_id: String(config.image_storage?.s3_account_id || "").trim(),
+          s3_endpoint: String(config.image_storage?.s3_endpoint || "").trim(),
+          s3_region: String(config.image_storage?.s3_region || "auto").trim() || "auto",
+          s3_access_key_id: String(config.image_storage?.s3_access_key_id || "").trim(),
+          s3_secret_access_key: String(config.image_storage?.s3_secret_access_key || "").trim(),
+          s3_bucket: String(config.image_storage?.s3_bucket || "").trim(),
+          s3_prefix: typeof config.image_storage?.s3_prefix === "string"
+            ? config.image_storage.s3_prefix.trim()
+            : "media2api/images",
           public_base_url: String(config.image_storage?.public_base_url || "").trim(),
         },
         proxy_runtime: {
@@ -626,7 +655,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         next.mode = "local";
       }
       if (key === "enabled" && value && next.mode === "local") {
-        next.mode = "webdav";
+        next.mode = next.provider === "s3" ? "s3" : "webdav";
+      }
+      if (key === "provider") {
+        if (value === "s3" && next.mode === "webdav") {
+          next.mode = "s3";
+        } else if (value === "webdav" && next.mode === "s3") {
+          next.mode = "webdav";
+        }
       }
       return {
         config: {
@@ -635,6 +671,32 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         },
       };
     });
+  },
+
+  copyBackupR2ToImageStorage: () => {
+    set((state) => {
+      if (!state.config?.image_storage || !state.config?.backup) {
+        return {};
+      }
+      const backup = state.config.backup;
+      const current = state.config.image_storage;
+      return {
+        config: {
+          ...state.config,
+          image_storage: {
+            ...current,
+            enabled: true,
+            provider: "s3",
+            mode: current.mode === "local" || current.mode === "webdav" ? "s3" : current.mode,
+            s3_account_id: String(backup.account_id || current.s3_account_id || ""),
+            s3_access_key_id: String(backup.access_key_id || current.s3_access_key_id || ""),
+            s3_secret_access_key: String(backup.secret_access_key || current.s3_secret_access_key || ""),
+            s3_bucket: String(backup.bucket || current.s3_bucket || ""),
+          },
+        },
+      };
+    });
+    toast.success("已填入备份中的 Cloudflare R2 凭据，请补充公开访问域名并点击保存");
   },
 
   setProxyRuntimeField: (key, value) => {
@@ -702,6 +764,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   testImageStorage: async () => {
     set({ isTestingImageStorage: true });
+    const label = get().config?.image_storage?.provider === "s3" ? "R2/S3" : "WebDAV";
     try {
       const saved = await get().saveConfig();
       if (!saved) {
@@ -709,12 +772,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       }
       const data = await testImageStorageConnection();
       if (data.result.ok) {
-        toast.success(`WebDAV 连接可用：HTTP ${data.result.status}`);
+        toast.success(`${label} 连接可用：HTTP ${data.result.status}`);
       } else {
-        toast.error(`WebDAV 连接失败：${data.result.error ?? `HTTP ${data.result.status}`}`);
+        toast.error(`${label} 连接失败：${data.result.error ?? `HTTP ${data.result.status}`}`);
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "测试 WebDAV 失败");
+      toast.error(error instanceof Error ? error.message : `测试 ${label} 失败`);
     } finally {
       set({ isTestingImageStorage: false });
     }
@@ -965,6 +1028,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         selectedNames: [],
         fileQuery: "",
         filePage: 1,
+        pageSize: "100",
         browserOpen: true,
       });
       toast.success(`读取成功，共 ${files.length} 个远程账号`);

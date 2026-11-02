@@ -6,7 +6,7 @@ import itertools
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -24,6 +24,31 @@ from utils.helper import anthropic_sse_stream, sse_json_stream
 LOG_TYPE_CALL = "call"
 LOG_TYPE_ACCOUNT = "account"
 INTERNAL_RESPONSE_KEYS = {"_account_email", "_conversation_id"}
+LOG_TIMEZONE = timezone(timedelta(hours=8))
+LOG_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def log_timestamp(timestamp: float | None = None) -> str:
+    """Persist log timestamps with an explicit offset, independent of the host timezone."""
+    instant = time.time() if timestamp is None else timestamp
+    return datetime.fromtimestamp(instant, LOG_TIMEZONE).isoformat(sep=" ", timespec="seconds")
+
+
+def _localize_legacy_time(value: datetime) -> datetime:
+    # Older logs recorded the server's local time without an offset.
+    return value.astimezone()
+
+
+def _display_log_time(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    try:
+        instant = datetime.fromisoformat(value)
+        if instant.tzinfo is None:
+            instant = _localize_legacy_time(instant)
+        return instant.astimezone(LOG_TIMEZONE).strftime(LOG_TIME_FORMAT)
+    except (ValueError, OverflowError, OSError):
+        return value
 
 
 class LogService:
@@ -52,6 +77,19 @@ class LogService:
         return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
 
     @staticmethod
+    def _display_item(item: dict[str, Any]) -> dict[str, Any]:
+        displayed = dict(item)
+        if "time" in displayed:
+            displayed["time"] = _display_log_time(displayed["time"])
+        detail = displayed.get("detail")
+        if isinstance(detail, dict):
+            displayed["detail"] = {
+                key: _display_log_time(value) if key in {"started_at", "ended_at"} else value
+                for key, value in detail.items()
+            }
+        return displayed
+
+    @staticmethod
     def _matches_filters(item: dict[str, Any], *, type: str = "", start_date: str = "", end_date: str = "") -> bool:
         t = str(item.get("time") or "")
         day = t[:10]
@@ -66,7 +104,7 @@ class LogService:
     def add(self, type: str, summary: str = "", detail: dict[str, Any] | None = None, **data: Any) -> None:
         item = {
             "id": uuid4().hex,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "time": log_timestamp(),
             "type": type,
             "summary": summary,
             "detail": detail or data,
@@ -85,6 +123,7 @@ class LogService:
                 parsed.append(item)
         items: list[dict[str, Any]] = []
         for item in collapse_legacy_task_logs(parsed):
+            item = self._display_item(item)
             if not self._matches_filters(item, type=type, start_date=start_date, end_date=end_date):
                 continue
             items.append(item)
@@ -309,7 +348,25 @@ class LoggedCall:
         if not has_first:
             self.log("流式调用结束")
             return StreamingResponse(sender(()), media_type="text/event-stream", headers={"X-Image-Task-Id": context.task_id} if context else None)
-        return StreamingResponse(sender(self.stream(itertools.chain([first], result))), media_type="text/event-stream", headers={"X-Image-Task-Id": context.task_id} if context else None)
+        encoded = sender(self.stream(itertools.chain([first], result)))
+        from services.providers.grok_catalog import is_grok
+        if is_grok(self.model) and context is None:
+            async def managed_stream():
+                import anyio
+                try:
+                    while True:
+                        present, chunk = await run_in_threadpool(_next_item, encoded)
+                        if not present:
+                            break
+                        yield chunk
+                finally:
+                    with anyio.CancelScope(shield=True):
+                        for iterator in (encoded, result):
+                            close = getattr(iterator, "close", None)
+                            if close:
+                                await run_in_threadpool(close)
+            return StreamingResponse(managed_stream(), media_type="text/event-stream")
+        return StreamingResponse(encoded, media_type="text/event-stream", headers={"X-Image-Task-Id": context.task_id} if context else None)
 
     def stream(self, items):
         urls: list[str] = []
@@ -317,8 +374,13 @@ class LoggedCall:
         conversation_ids: list[str] = []
         failed = False
         response_id = ""
+        usage = None
         try:
             for item in items:
+                if isinstance(item, dict):
+                    current_usage = item.get("usage") or (item.get("response", {}).get("usage") if isinstance(item.get("response"), dict) else None)
+                    if isinstance(current_usage, dict):
+                        usage = current_usage
                 if isinstance(item, dict) and isinstance(item.get("response"), dict):
                     response_id = str(item["response"].get("id") or response_id)
                 urls.extend(_collect_urls(item))
@@ -348,7 +410,7 @@ class LoggedCall:
             raise
         finally:
             if not failed:
-                self.log("流式调用结束", urls=urls, account_email=account_emails[0] if account_emails else "",
+                self.log("流式调用结束", result={"usage": usage}, urls=urls, account_email=account_emails[0] if account_emails else "",
                          conversation_id=conversation_ids[0] if conversation_ids else "")
 
     def log(self, suffix: str, result: object = None, status: str = "success", error: str = "",
@@ -360,11 +422,19 @@ class LoggedCall:
             "role": self.identity.get("role"),
             "endpoint": self.endpoint,
             "model": self.model,
-            "started_at": datetime.fromtimestamp(self.started).strftime("%Y-%m-%d %H:%M:%S"),
-            "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": log_timestamp(self.started),
+            "ended_at": log_timestamp(),
             "duration_ms": int((time.time() - self.started) * 1000),
             "status": status,
         }
+        from services.providers.grok_catalog import is_grok
+        if is_grok(self.model):
+            detail["channel"] = "grok_web"
+            if isinstance(result, dict) and isinstance(result.get("usage"), dict):
+                detail["usage"] = result["usage"]
+            if isinstance(result, dict) and result.get("video_id"):
+                detail["video_id"] = result["video_id"]
+                detail["video_duration"] = result.get("duration")
         if self.image_task_id:
             detail["image_task_id"] = self.image_task_id
             try:

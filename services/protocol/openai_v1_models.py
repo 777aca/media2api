@@ -55,12 +55,41 @@ def _image_models(*, include_source: bool) -> tuple[list[dict[str, object]], int
 def list_models(*, force_refresh: bool = False) -> dict[str, object]:
     """OpenAI 兼容的图片目录；每次读取本地账号，保留刷新参数兼容调用方。"""
     data, _ = _image_models(include_source=False)
+    from services.providers.grok_catalog import catalog
+    from services.providers.grok_store import get_store
+    data.extend(catalog(get_store().accounts(), "image,image_edit"))
     return {"object": "list", "data": data}
+
+
+def list_all_models(*, force_refresh: bool = False) -> dict[str, object]:
+    """Combine the local image entries with the cached per-account text catalog."""
+    from services.model_service import model_catalog_service
+
+    images = list_models()["data"]
+    try:
+        official = model_catalog_service.list_models(force_refresh=force_refresh)["data"]
+    except Exception:
+        # The image catalog must remain usable when an upstream catalog fails.
+        official = []
+    by_id = {item["id"]: item for item in images}
+    for item in official:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            by_id.setdefault(item["id"], item)
+    from services.providers.grok_catalog import catalog
+    from services.providers.grok_store import get_store
+    for item in catalog(get_store().accounts()):
+        by_id[item["id"]] = item
+    return {"object": "list", "data": [by_id[key] for key in sorted(by_id)]}
 
 
 def get_catalog(*, force_refresh: bool = False) -> dict[str, object]:
     """管理员图片目录；sync 表示本地目录刷新，不代表上游权限探测。"""
     data, account_count = _image_models(include_source=True)
+    from services.providers.grok_catalog import catalog
+    from services.providers.grok_store import get_store
+    grok_accounts = get_store().accounts()
+    data.extend(catalog(grok_accounts))
+    account_count += len(grok_accounts)
     refreshed_at = datetime.now(timezone.utc).isoformat()
     return {
         "object": "list",

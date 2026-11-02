@@ -55,15 +55,15 @@ export default function LoginPage() {
   return (
     <div className="grid min-h-[calc(100vh-1rem)] w-full place-items-center px-4 py-6">
       <HeaderActions className="fixed top-4 right-4 z-10" />
-      <Card className="w-full max-w-[505px] rounded-[30px] border-white/80 bg-white/95 shadow-[0_28px_90px_rgba(28,25,23,0.10)]">
+      <Card className="w-full max-w-[400px] rounded-xl border-border bg-background shadow-none">
         <CardContent className="space-y-7 p-6 sm:p-8">
           <div className="space-y-4 text-center">
-            <div className="mx-auto inline-flex size-14 items-center justify-center rounded-[18px] bg-stone-950 text-white shadow-sm">
+            <div className="mx-auto inline-flex size-11 items-center justify-center rounded-xl bg-secondary text-foreground">
               <LockKeyhole className="size-5" />
             </div>
             <div className="space-y-2">
               <h1 className="text-3xl font-semibold tracking-tight text-stone-950">media2api</h1>
-              <p className="text-sm leading-6 text-stone-500">输入密钥后继续使用账号管理和图片生成功能。</p>
+              <p className="text-sm leading-6 text-stone-500">输入密钥后使用对话、图片、视频和账号管理功能。</p>
             </div>
           </div>
 
@@ -82,12 +82,12 @@ export default function LoginPage() {
                 }
               }}
               placeholder="请输入密钥"
-              className="h-13 rounded-2xl border-stone-200 bg-white px-4"
+              className="h-10 rounded-md border-input bg-background px-3"
             />
           </div>
 
           <Button
-            className="h-13 w-full rounded-2xl bg-stone-950 text-white hover:bg-stone-800"
+            className="h-10 w-full rounded-md"
             onClick={() => void handleLogin()}
             disabled={isSubmitting}
           >

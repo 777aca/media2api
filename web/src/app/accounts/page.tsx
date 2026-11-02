@@ -1,6 +1,8 @@
 "use client";
 
 import { clearImageCooldown } from "@/lib/generation-runtime";
+import { GrokAccountRow, grokAccountPath, useGrokAccounts } from "@/components/grok-accounts";
+import { channelLabels, filterPoolRows, partitionPoolRows, poolRows, type PoolRow } from "@/lib/account-pool";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
@@ -100,7 +102,7 @@ const metricCards = [
   { key: "limited", label: "限流账户", color: "text-orange-500", icon: CircleAlert },
   { key: "abnormal", label: "异常账户", color: "text-rose-500", icon: CircleOff },
   { key: "disabled", label: "禁用账户", color: "text-stone-500", icon: Ban },
-  { key: "quota", label: "剩余额度", color: "text-blue-500", icon: RefreshCw },
+  { key: "quota", label: "ChatGPT / Codex 额度", color: "text-blue-500", icon: RefreshCw },
 ] as const;
 
 function formatCompact(value: number) {
@@ -164,26 +166,27 @@ function displayAccountType(account: Account) {
   return account.type || "Free";
 }
 
-function displayAccountSource(account: Account) {
-  const source = String(account.source_type || "").trim().toLowerCase();
-  if (!source) {
-    return "web";
-  }
-  if (source === "web") {
-    return "web";
-  }
-  return source;
-}
-
 function AccountsPageContent() {
   const didLoadRef = useRef(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const grok = useGrokAccounts();
+  const [importOpen, setImportOpen] = useState(false);
+  const [selectedGrokIds, setSelectedGrokIds] = useState<string[]>([]);
+  const [channelFilter, setChannelFilter] = useState("all");
+  const [batchBusy, setBatchBusy] = useState(false);
   const [cooldownNow, setCooldownNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setCooldownNow(Date.now()), 15000);
     return () => window.clearInterval(timer);
   }, []);
   const modelCatalog = useModelCatalog();
+  const grokRevisionRef = useRef(grok.revision);
+  useEffect(() => {
+    if (grokRevisionRef.current !== grok.revision) {
+      grokRevisionRef.current = grok.revision;
+      void modelCatalog.reload();
+    }
+  }, [grok.revision, modelCatalog]);
   const didLoadAccountsRef = useRef(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
@@ -201,7 +204,7 @@ function AccountsPageContent() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingTokens, setRefreshingTokens] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
-  const [deleteRequest, setDeleteRequest] = useState<{ tokens: string[]; title: string; description: string } | null>(null);
+  const [deleteRequest, setDeleteRequest] = useState<{ tokens: string[]; grokIds: string[]; title: string; description: string } | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isRelogining, setIsRelogining] = useState(false);
   const [progress, setProgress] = useState<{
@@ -258,23 +261,24 @@ function AccountsPageContent() {
     };
   }, []);
 
-  const filteredAccounts = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    return accounts.filter((account) => {
-      const searchMatched =
-        normalizedQuery.length === 0 || (account.email ?? "").toLowerCase().includes(normalizedQuery);
-      const typeMatched = typeFilter === "all" || displayAccountType(account) === typeFilter;
-      const statusMatched = statusFilter === "all" || account.status === statusFilter;
-      return searchMatched && typeMatched && statusMatched;
-    });
-  }, [accounts, query, statusFilter, typeFilter]);
-
+  // Reuse each channel's operations while sharing one view, selection and pagination.
+  const rows = useMemo(() => poolRows(accounts, grok.accounts, cooldownNow), [accounts, grok.accounts, cooldownNow]);
+  const filteredAccounts = useMemo(
+    () => filterPoolRows(rows, query, channelFilter, typeFilter, statusFilter),
+    [rows, query, channelFilter, typeFilter, statusFilter],
+  );
   const pageCount = Math.max(1, Math.ceil(filteredAccounts.length / Number(pageSize)));
   const safePage = Math.min(page, pageCount);
   const startIndex = (safePage - 1) * Number(pageSize);
   const currentRows = filteredAccounts.slice(startIndex, startIndex + Number(pageSize));
-  const allCurrentSelected =
-    currentRows.length > 0 && currentRows.every((row) => selectedIds.includes(row.access_token));
+  const isSelected = (row: PoolRow) => row.kind === "grok"
+    ? selectedGrokIds.includes(row.account.id) : selectedIds.includes(row.account.access_token);
+  const selectedRows = rows.filter(isSelected);
+  const selectedGrok = partitionPoolRows(selectedRows).grokIds;
+  const allCurrentSelected = currentRows.length > 0 && currentRows.every(isSelected);
+  const someCurrentSelected = currentRows.some(isSelected);
+  const poolLoading = isLoading || grok.loading;
+  const poolBusy = batchBusy || isRefreshing || isDeleting || grok.busy;
 
   const summary = useMemo(() => {
     const total = accounts.length;
@@ -289,20 +293,16 @@ function AccountsPageContent() {
 
   const accountTypeOptions = useMemo(
     () => [
-      { label: "全部类型", value: "all" },
-      ...Array.from(new Set(accounts.map(displayAccountType))).map((type) => ({ label: type, value: type })),
+      { label: "全部等级", value: "all" },
+      ...Array.from(new Set(rows.map(row => row.tier))).map((type) => ({ label: type === "auto" ? "自动 / Basic" : type, value: type })),
     ],
-    [accounts],
+    [rows],
   );
 
   const selectedTokens = useMemo(() => {
     const selectedSet = new Set(selectedIds);
     return accounts.filter((item) => selectedSet.has(item.access_token)).map((item) => item.access_token);
   }, [accounts, selectedIds]);
-
-  const abnormalTokens = useMemo(() => {
-    return accounts.filter((item) => item.status === "异常").map((item) => item.access_token);
-  }, [accounts]);
 
   const paginationItems = useMemo(() => {
     const items: (number | "...")[] = [];
@@ -318,12 +318,12 @@ function AccountsPageContent() {
     return items;
   }, [pageCount, safePage]);
 
-  const openDeleteConfirm = (tokens: string[], title: string, accountLabel?: string) => {
-    if (tokens.length === 0 || isDeleting) return;
+  const openDeleteConfirm = (tokens: string[], title: string, accountLabel?: string, grokIds: string[] = []) => {
+    const count = tokens.length + grokIds.length;
+    if (count === 0 || poolBusy) return;
     setDeleteRequest({
-      tokens: [...tokens],
-      title,
-      description: `确认从号池中删除${accountLabel ? `账户「${accountLabel}」` : `这 ${tokens.length} 个账户`}吗？删除后无法撤销，需要重新导入才能使用。`,
+      tokens: [...tokens], grokIds: [...grokIds], title,
+      description: `确认从号池中删除${accountLabel ? `账户「${accountLabel}」` : `这 ${count} 个账户（ChatGPT / Codex ${tokens.length} 个，Grok ${grokIds.length} 个）`}吗？删除后需要重新导入才能使用。`,
     });
   };
 
@@ -725,11 +725,42 @@ function AccountsPageContent() {
   };
 
   const toggleSelectAll = (checked: boolean) => {
-    if (checked) {
-      setSelectedIds((prev) => Array.from(new Set([...prev, ...currentRows.map((item) => item.access_token)])));
-      return;
-    }
-    setSelectedIds((prev) => prev.filter((id) => !currentRows.some((row) => row.access_token === id)));
+    const { tokens, grokIds } = partitionPoolRows(currentRows);
+    setSelectedIds(prev => checked ? Array.from(new Set([...prev, ...tokens])) : prev.filter(id => !tokens.includes(id)));
+    setSelectedGrokIds(prev => checked ? Array.from(new Set([...prev, ...grokIds])) : prev.filter(id => !grokIds.includes(id)));
+  };
+
+  const refreshRows = async (targetRows: PoolRow[]) => {
+    if (poolBusy || !targetRows.length) return;
+    const { tokens, grokIds } = partitionPoolRows(targetRows);
+    setBatchBusy(true);
+    try {
+      await Promise.all([
+        tokens.length ? handleRefreshAccounts(tokens) : Promise.resolve(),
+        grokIds.length ? grok.mutate(grokIds.map(id => ({ path: `${grokAccountPath(id)}/sync` }))) : Promise.resolve(),
+      ]);
+    } finally { setBatchBusy(false); }
+  };
+
+  const deleteRequestedRows = async () => {
+    if (!deleteRequest || poolBusy) return false;
+    setBatchBusy(true);
+    try {
+      const openaiOk = !deleteRequest.tokens.length || await handleDeleteTokens(deleteRequest.tokens);
+      const grokOk = !deleteRequest.grokIds.length || await grok.mutate(deleteRequest.grokIds.map(id => ({ path: grokAccountPath(id), method: "DELETE" })));
+      // Close the old request; a retry uses the refreshed selection instead of already deleted rows.
+      setDeleteRequest(null);
+      return openaiOk && grokOk;
+    } finally { setBatchBusy(false); }
+  };
+
+  const grokSummary = {
+    total: grok.accounts.length,
+    active: rows.filter(row => row.kind === "grok" && row.status === "正常").length,
+    limited: rows.filter(row => row.kind === "grok" && row.status === "限流").length,
+    abnormal: rows.filter(row => row.kind === "grok" && row.status === "异常").length,
+    disabled: rows.filter(row => row.kind === "grok" && row.status === "禁用").length,
+    quota: 0,
   };
 
   return (
@@ -746,27 +777,39 @@ function AccountsPageContent() {
           <Button
             variant="outline"
             className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => void loadAccounts()}
-            disabled={isLoading || isRefreshing || isDeleting}
+            onClick={() => { void loadAccounts(); void grok.reload(); }}
+            disabled={poolLoading || poolBusy}
           >
-            <RefreshCw className={cn("size-4", isLoading ? "animate-spin" : "")} />
+            <RefreshCw className={cn("size-4", poolLoading ? "animate-spin" : "")} />
             刷新
           </Button>
           <Button
             variant="outline"
             className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => void handleRefreshAccounts(accounts.map((item) => item.access_token))}
-            disabled={isLoading || isRefreshing || isDeleting || accounts.length === 0}
+            onClick={() => void refreshRows(rows)}
+            disabled={poolLoading || poolBusy || rows.length === 0}
           >
             <RefreshCw className={cn("size-4", isRefreshing ? "animate-spin" : "")} />
-            一键刷新所有账号信息和额度
+            同步全部额度
           </Button>
           <AccountImportDialog
-            disabled={isLoading || isRefreshing || isDeleting}
+            grokBusy={grok.busy}
+            grokError={grok.error}
+            onOpenChange={setImportOpen}
+            onGrokImport={async input => {
+              const ok = await grok.mutate([{ path: "/api/grok/accounts/import", body: { data: input } }]);
+              if (ok) { setPage(1); setQuery(""); setChannelFilter("all"); setTypeFilter("all"); setStatusFilter("all"); }
+              return ok;
+            }}
+            disabled={poolLoading || poolBusy}
             onImported={(items) => {
               applyAccountChanges(items);
               setSelectedIds([]);
               setPage(1);
+              setQuery("");
+              setChannelFilter("all");
+              setTypeFilter("all");
+              setStatusFilter("all");
             }}
           />
           <Button
@@ -776,10 +819,12 @@ function AccountsPageContent() {
             disabled={accounts.length === 0}
           >
             <Download className="size-4" />
-            导出全部 Token
+            导出 ChatGPT Token
           </Button>
         </div>
       </section>
+
+      {grok.error && !importOpen && <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"><span>{grok.error}</span><Button variant="outline" size="sm" disabled={grok.loading || grok.busy} onClick={() => void grok.reload()}>重新加载 Grok</Button></div>}
 
       {/* 进度条 */}
       {progress.visible && (
@@ -911,7 +956,8 @@ function AccountsPageContent() {
         <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
           {metricCards.map((item) => {
             const Icon = item.icon;
-            const value = (refreshSummary ?? summary)[item.key];
+            const baseValue = (refreshSummary ?? summary)[item.key];
+            const value = item.key === "quota" ? baseValue : Number(baseValue) + grokSummary[item.key];
             return (
               <Card key={item.key} className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
                 <CardContent className="p-4">
@@ -954,10 +1000,15 @@ function AccountsPageContent() {
                   setQuery(event.target.value);
                   setPage(1);
                 }}
-                placeholder="搜索邮箱"
+                aria-label="搜索账号"
+                placeholder="搜索名称、邮箱或渠道"
                 className="h-10 rounded-xl border-stone-200 bg-white/85 pl-10"
               />
             </div>
+            <Select value={channelFilter} onValueChange={value => { setChannelFilter(value); setPage(1); }}>
+              <SelectTrigger aria-label="渠道类型" className="h-10 w-full rounded-xl lg:w-[150px]"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="all">全部渠道</SelectItem>{Object.entries(channelLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
+            </Select>
             <Select
               value={typeFilter}
               onValueChange={(value) => {
@@ -997,7 +1048,7 @@ function AccountsPageContent() {
           </div>
         </div>
 
-        {isLoading && accounts.length === 0 ? (
+        {poolLoading && rows.length === 0 ? (
           <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
             <CardContent className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
               <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
@@ -1014,7 +1065,7 @@ function AccountsPageContent() {
         <Card
           className={cn(
             "overflow-hidden rounded-2xl border-white/80 bg-white/90 shadow-sm",
-            isLoading && accounts.length === 0 ? "hidden" : "",
+            poolLoading && rows.length === 0 ? "hidden" : "",
           )}
         >
           <CardContent className="space-y-0 p-0">
@@ -1023,8 +1074,8 @@ function AccountsPageContent() {
                 <Button
                   variant="ghost"
                   className="h-8 rounded-lg px-3 text-stone-500 hover:bg-stone-100"
-                  onClick={() => void handleRefreshAccounts(selectedTokens)}
-                  disabled={selectedTokens.length === 0 || isRefreshing}
+                  onClick={() => void refreshRows(selectedRows)}
+                  disabled={selectedRows.length === 0 || poolBusy}
                 >
                   {isRefreshing ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                   刷新选中账号信息和额度
@@ -1033,17 +1084,20 @@ function AccountsPageContent() {
                   variant="ghost"
                   className="h-8 rounded-lg px-3 text-amber-600 hover:bg-amber-50 hover:text-amber-700"
                   onClick={() => void handleReLogin(selectedTokens)}
-                  disabled={selectedTokens.length === 0 || isRelogining}
+                  disabled={selectedTokens.length === 0 || isRelogining || poolBusy}
                   title="尝试密码登录恢复账号"
                 >
                   {isRelogining ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                  尝试恢复异常账号
+                  恢复 ChatGPT / Codex 异常账号
                 </Button>
                 <Button
                   variant="ghost"
                   className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
-                  onClick={() => openDeleteConfirm(abnormalTokens, "移除异常账号")}
-                  disabled={abnormalTokens.length === 0 || isDeleting}
+                  onClick={() => {
+                    const abnormal = partitionPoolRows(rows.filter(row => row.status === "异常"));
+                    openDeleteConfirm(abnormal.tokens, "移除异常账号", undefined, abnormal.grokIds);
+                  }}
+                  disabled={!rows.some(row => row.status === "异常") || poolBusy}
                 >
                   {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
                   移除异常账号
@@ -1051,15 +1105,16 @@ function AccountsPageContent() {
                 <Button
                   variant="ghost"
                   className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
-                  onClick={() => openDeleteConfirm(selectedTokens, "删除所选账户")}
-                  disabled={selectedTokens.length === 0 || isDeleting}
+                  onClick={() => openDeleteConfirm(selectedTokens, "删除所选账户", undefined, selectedGrok)}
+                  disabled={selectedRows.length === 0 || poolBusy}
                 >
                   {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
                   删除所选
                 </Button>
-                {selectedIds.length > 0 ? (
-                  <span className="rounded-lg bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600">
-                    已选择 {selectedIds.length} 项
+                {selectedRows.length > 0 ? (
+                  <span className="flex items-center gap-2 rounded-lg bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600">
+                    已选择 {selectedRows.length} 项
+                    <button type="button" className="underline underline-offset-2" onClick={() => { setSelectedIds([]); setSelectedGrokIds([]); }}>取消选择</button>
                   </span>
                 ) : null}
               </div>
@@ -1071,13 +1126,14 @@ function AccountsPageContent() {
                   <tr>
                     <th className="w-12 px-4 py-3">
                       <Checkbox
-                        checked={allCurrentSelected}
-                        onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))}
+                        aria-label="选择当前页所有账号"
+                        checked={allCurrentSelected ? true : someCurrentSelected ? "indeterminate" : false}
+                        onCheckedChange={(checked) => toggleSelectAll(checked === true)}
                       />
                     </th>
-                    <th className="w-56 px-4 py-3">token</th>
-                    <th className="w-28 px-4 py-3">类型</th>
-                    <th className="w-24 px-4 py-3">来源</th>
+                    <th className="w-56 px-4 py-3">账号</th>
+                    <th className="w-28 px-4 py-3">等级</th>
+                    <th className="w-24 px-4 py-3">渠道类型</th>
                     <th className="min-w-24 px-3 py-3">状态</th>
                     <th className="w-20 px-3 py-3 text-center" title="数值越大越先使用">优先级</th>
                     <th className="w-20 px-3 py-3 text-center" title="同优先级按权重比例分配请求">权重</th>
@@ -1092,17 +1148,23 @@ function AccountsPageContent() {
                   </tr>
                 </thead>
                 <tbody>
-                  {currentRows.map((account) => {
+                  {currentRows.map((row) => {
+                    if (row.kind === "grok") return <GrokAccountRow key={row.key} account={row.account} status={row.status}
+                      selected={isSelected(row)} onSelect={checked => setSelectedGrokIds(prev => checked ? Array.from(new Set([...prev, row.account.id])) : prev.filter(id => id !== row.account.id))}
+                      busy={poolBusy} onChange={change => { void grok.mutate([change]); }}
+                      onDelete={() => openDeleteConfirm([], "删除账户", row.account.name, [row.account.id])} />;
+                    const account = row.account;
                     const status = statusMeta[account.status];
                     const StatusIcon = status.icon;
 
                     return (
                       <tr
-                        key={account.access_token}
+                        key={row.key}
                         className="group border-b border-stone-100/80 text-sm text-stone-600 transition-colors hover:bg-stone-50/70"
                       >
                         <td className="px-4 py-3">
                           <Checkbox
+                            aria-label={`选择 ${account.email || "ChatGPT / Codex 账号"}`}
                             checked={selectedIds.includes(account.access_token)}
                             onCheckedChange={(checked) => {
                               setSelectedIds((prev) =>
@@ -1136,8 +1198,8 @@ function AccountsPageContent() {
                           </Badge>
                         </td>
                         <td className="px-4 py-3">
-                          <Badge variant="outline" className="rounded-md border-stone-200 text-stone-600">
-                            {displayAccountSource(account)}
+                          <Badge variant="outline" className="whitespace-nowrap rounded-md border-stone-200 text-stone-600">
+                            {channelLabels[row.channel]}
                           </Badge>
                         </td>
                         <td className="whitespace-nowrap px-3 py-3">
@@ -1221,7 +1283,7 @@ function AccountsPageContent() {
                               type="button"
                               className="rounded-lg p-2 transition hover:bg-stone-100 hover:text-stone-700"
                               onClick={() => openEditDialog(account)}
-                              disabled={isUpdating}
+                              disabled={isUpdating || poolBusy}
                               aria-label="编辑账户"
                             >
                               <Pencil className="size-4" />
@@ -1230,7 +1292,7 @@ function AccountsPageContent() {
                               type="button"
                               className="rounded-lg p-2 transition hover:bg-stone-100 hover:text-stone-700"
                               onClick={() => void handleRefreshAccounts([account.access_token])}
-                              disabled={isRefreshing || refreshingTokens.has(account.access_token)}
+                              disabled={poolBusy || refreshingTokens.has(account.access_token)}
                             >
                               <RefreshCw className={cn("size-4", (isRefreshing || refreshingTokens.has(account.access_token)) ? "animate-spin" : "")} />
                             </button>
@@ -1238,7 +1300,7 @@ function AccountsPageContent() {
                               type="button"
                               className="rounded-lg p-2 transition hover:bg-rose-50 hover:text-rose-500"
                               onClick={() => openDeleteConfirm([account.access_token], "删除账户", account.email || "所选账户")}
-                              disabled={isDeleting}
+                              disabled={poolBusy}
                               aria-label="删除账户"
                             >
                               <Trash2 className="size-4" />
@@ -1251,7 +1313,7 @@ function AccountsPageContent() {
                 </tbody>
               </table>
 
-              {!isLoading && currentRows.length === 0 ? (
+              {!poolLoading && currentRows.length === 0 ? (
                 <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
                   <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
                     <Search className="size-5" />
@@ -1341,7 +1403,7 @@ function AccountsPageContent() {
         onOpenChange={(open) => { if (!open) setDeleteRequest(null); }}
         title={deleteRequest?.title || "删除账户"}
         description={deleteRequest?.description}
-        onConfirm={() => handleDeleteTokens(deleteRequest?.tokens || [])}
+        onConfirm={deleteRequestedRows}
       />
     </>
   );

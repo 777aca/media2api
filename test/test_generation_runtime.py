@@ -12,7 +12,6 @@ from unittest import mock
 from services.generation_context import GenerationContext, checkpoint
 from services.generation_errors import GenerationRuntimeError, classify_image_error
 from services.generation_runtime import GenerationRuntime, DEFAULT_QUEUE, queue_settings
-from services.generation_statistics import runtime_statistics
 from services.generation_store import GenerationStore
 from services.protocol.conversation import ConversationRequest, ImageOutput
 from utils.helper import UpstreamHTTPError
@@ -291,14 +290,14 @@ class RuntimeTests(unittest.TestCase):
         finally:
             second.store.close()
 
-    def test_statistics_excludes_user_faults_from_platform_denominator(self):
-        self.assertIsNone(runtime_statistics(self.runtime)["summary"]["platform_success_rate"])
+    def test_invalid_request_failure_keeps_category_and_releases_quota(self):
         self.runtime.execute = lambda request, index, total, row: (_ for _ in ()).throw(GenerationRuntimeError("bad parameter", "invalid_image_request", 400))
         job = self.submit()
         self.wait_for(lambda: self.runtime.jobs(self.identities["a"], [job])[0]["status"] == "error")
-        stats = runtime_statistics(self.runtime)["summary"]
-        self.assertEqual(stats["invalid_request"], 1)
-        self.assertIsNone(stats["platform_success_rate"])
+        task = self.runtime.jobs(self.identities["a"], [job])[0]
+        self.assertEqual(task["error_category"], "invalid_request")
+        quota = self.runtime.store.quota("a")
+        self.assertEqual((quota["image_quota_used"], quota["image_quota_reserved"]), (0, 0))
 
 
 class ClassificationTests(unittest.TestCase):

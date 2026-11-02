@@ -10,11 +10,11 @@ from services.protocol.error_response import anthropic_error_response, openai_er
 
 
 def _is_openai_compatible_path(path: str) -> bool:
-    return path == "/v1" or path.startswith("/v1/")
+    return path in {"/v1", "/grok/v1"} or path.startswith(("/v1/", "/grok/v1/"))
 
 
 def _is_anthropic_messages_path(path: str) -> bool:
-    return path == "/v1/messages"
+    return path in {"/v1/messages", "/grok/v1/messages"}
 
 
 def _compatible_error_response(
@@ -30,6 +30,13 @@ def _compatible_error_response(
 
 def install_exception_handlers(app: FastAPI) -> None:
     from services.generation_errors import GenerationRuntimeError
+    from services.providers.grok_web import GrokError
+
+    @app.exception_handler(GrokError)
+    async def grok_error(request: Request, exc: GrokError) -> JSONResponse:
+        if _is_openai_compatible_path(request.url.path):
+            return _compatible_error_response(request, str(exc), exc.status_code)
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
     @app.exception_handler(GenerationRuntimeError)
     async def generation_runtime_error(request: Request, exc: GenerationRuntimeError) -> JSONResponse:
@@ -47,15 +54,6 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-        if request.url.path in {"/v1/images/generations", "/v1/images/edits", "/v1/chat/completions", "/v1/responses", "/api/image-tasks/generations", "/api/image-tasks/edits"}:
-            from api.support import require_identity
-            from services.generation_protocol import record_image_rejection
-            try:
-                identity = require_identity(request.headers.get("authorization"))
-            except StarletteHTTPException:
-                identity = None
-            if identity:
-                record_image_rejection(identity, request.url.path, exc.body if isinstance(exc.body, dict) else {}, exc, category="invalid_request")
         if _is_openai_compatible_path(request.url.path):
             return _compatible_error_response(request, exc.errors(), 422)
         return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})

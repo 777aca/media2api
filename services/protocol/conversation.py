@@ -1393,6 +1393,17 @@ def _generate_single_image(request: ConversationRequest, index: int, total: int)
 
 
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:
+    from services.providers.grok_catalog import is_grok, resolve
+    if is_grok(request.model):
+        spec = resolve(request.model)
+        if request.quality not in {"", "auto"}:
+            raise ImageGenerationError("Grok Web 不支持 quality 参数，请选择 auto", status_code=400)
+        if request.mask:
+            raise ImageGenerationError("Grok Web 不支持 mask", status_code=400)
+        if bool(request.images) != (spec.capability == "image_edit"):
+            raise ImageGenerationError("图片编辑需使用 grok-imagine-image-edit 并提供输入图片", status_code=400)
+        if request.images and len(request.images) > 8:
+            raise ImageGenerationError("Grok 图片编辑最多 8 张参考图", status_code=400)
     if not is_supported_image_model(request.model):
         raise ImageGenerationError("unsupported image model,supported models: " + ", ".join(sorted(IMAGE_MODELS)),
                                    status_code=400, error_type="invalid_request_error", code="unsupported_image_model")
@@ -1407,6 +1418,8 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
         yield from runtime.outputs(task_id, request)
         return
     # Internal maintenance callers have no HTTP identity. All public protocols supply context.
+    if is_grok(request.model):
+        raise ImageGenerationError("Grok 图片生成需要用户身份", status_code=401)
     for index in range(1, request.n + 1):
         yield from _generate_single_image(request, index, request.n)
 

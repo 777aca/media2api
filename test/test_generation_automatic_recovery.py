@@ -11,7 +11,6 @@ from unittest import mock
 
 from services.generation_context import GenerationContext
 from services.generation_runtime import GenerationRuntime
-from services.generation_statistics import runtime_statistics
 from services.protocol.conversation import ConversationRequest, ImageOutput
 
 
@@ -244,19 +243,18 @@ class AutomaticRecoveryTests(unittest.TestCase):
         backend.download_image_bytes.assert_called_once()
         self.assertEqual(result[0].data[0]["url"], "/images/recovered.png")
 
-    def test_statistics_include_active_recovery_and_final_failure(self):
-        _, child = self.pending()
+    def test_active_recovery_and_final_failure_remain_visible_to_task_owner(self):
+        job, child = self.pending()
         self.runtime.dispatch_once()
-        stats = runtime_statistics(self.runtime)
-        self.assertEqual(stats["live"]["recovering"], 1)
-        self.assertEqual(stats["summary"]["recovering"], 1)
-        self.assertIsNone(stats["summary"]["platform_success_rate"])
+        task = self.runtime.jobs(self.identity, [job])[0]
+        self.assertTrue(task["recovery_active"])
+        self.assertEqual(self.runtime.store.quota(self.identity["id"])["image_quota_reserved"], 1)
         self.now += 601
         self.runtime.dispatch_once()
-        stats = runtime_statistics(self.runtime)
-        self.assertEqual(stats["live"]["recovering"], 0)
-        self.assertEqual(stats["summary"]["platform_failures"], 1)
-        self.assertEqual(stats["summary"]["platform_success_rate"], 0)
+        task = self.runtime.jobs(self.identity, [job])[0]
+        self.assertFalse(task["recovery_active"])
+        self.assertEqual((task["status"], task["error_code"]), ("error", "image_result_recovery_expired"))
+        self.assertEqual(self.runtime.store.quota(self.identity["id"])["image_quota_reserved"], 0)
 
 
 if __name__ == "__main__":

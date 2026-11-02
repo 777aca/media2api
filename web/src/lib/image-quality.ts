@@ -17,6 +17,7 @@ const image25QualityOptions: readonly ImageQualityOption[] = [
 ];
 
 export function getImageQualityOptions(model: string): readonly ImageQualityOption[] {
+  if (model.startsWith("grok-")) return [{ value: "auto", label: "自动" }];
   return model === "gpt-image-2.5-flare" || model === "gpt-image-2.5-sunburst"
     ? image25QualityOptions
     : standardQualityOptions;

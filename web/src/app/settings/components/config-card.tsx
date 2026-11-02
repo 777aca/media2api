@@ -1,6 +1,6 @@
 "use client";
 
-import { Cloud, LoaderCircle, PlugZap, RefreshCw, Save } from "lucide-react";
+import { Cloud, Copy, LoaderCircle, PlugZap, RefreshCw, Save } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -10,7 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { ImageStorageMode } from "@/lib/api";
+import type { ImageStorageMode, ImageStorageProvider } from "@/lib/api";
 import { testProxy, type ProxyTestResult } from "@/lib/api";
 
 import { useSettingsStore } from "../store";
@@ -43,6 +43,7 @@ export function ConfigCard() {
   const setSensitiveWordsText = useSettingsStore((state) => state.setSensitiveWordsText);
   const setAIReviewField = useSettingsStore((state) => state.setAIReviewField);
   const setImageStorageField = useSettingsStore((state) => state.setImageStorageField);
+  const copyBackupR2ToImageStorage = useSettingsStore((state) => state.copyBackupR2ToImageStorage);
   const testImageStorage = useSettingsStore((state) => state.testImageStorage);
   const syncImagesToWebDAV = useSettingsStore((state) => state.syncImagesToWebDAV);
   const isTestingImageStorage = useSettingsStore((state) => state.isTestingImageStorage);
@@ -81,6 +82,18 @@ export function ConfigCard() {
       </Card>
     );
   }
+
+  const storageProvider: ImageStorageProvider = config?.image_storage?.provider === "s3" ? "s3" : "webdav";
+  const remoteLabel = storageProvider === "s3" ? "R2 / S3" : "WebDAV";
+  const remoteModeValue: ImageStorageMode = storageProvider === "s3" ? "s3" : "webdav";
+  const currentModeValue: ImageStorageMode = config?.image_storage?.mode === "both"
+    ? "both"
+    : config?.image_storage?.mode === "webdav" || config?.image_storage?.mode === "s3"
+      ? remoteModeValue
+      : "local";
+  const hasBackupR2 = Boolean(
+    config?.backup?.account_id || config?.backup?.access_key_id || config?.backup?.bucket,
+  );
 
   return (
     <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
@@ -191,7 +204,7 @@ export function ConfigCard() {
               placeholder="360"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">最少 1 小时，24 小时 = 1 天。与图片管理共用设置。到期清理本地图片，保留生成记录和调用日志；不删除 WebDAV 远程副本。</p>
+            <p className="text-xs text-stone-500">最少 1 小时，24 小时 = 1 天。与图片管理共用设置。到期清理本地图片，保留生成记录和调用日志；不删除 R2/S3 或 WebDAV 远程副本。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">图片轮询超时</label>
@@ -328,9 +341,20 @@ export function ConfigCard() {
                   checked={Boolean(config?.image_storage?.enabled)}
                   onCheckedChange={(checked) => setImageStorageField("enabled", Boolean(checked))}
                 />
-                启用 WebDAV 图片存储
+                启用远程图片存储（Cloudflare R2 / S3 / WebDAV）
               </label>
               <div className="flex flex-wrap gap-2">
+                {storageProvider === "s3" && hasBackupR2 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
+                    onClick={() => copyBackupR2ToImageStorage()}
+                  >
+                    <Copy className="size-4" />
+                    复用备份 R2 配置
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   variant="outline"
@@ -339,7 +363,7 @@ export function ConfigCard() {
                   disabled={isTestingImageStorage || !config?.image_storage?.enabled}
                 >
                   {isTestingImageStorage ? <LoaderCircle className="size-4 animate-spin" /> : <Cloud className="size-4" />}
-                  测试 WebDAV
+                  测试 {remoteLabel}
                 </Button>
                 <Button
                   type="button"
@@ -354,16 +378,16 @@ export function ConfigCard() {
               </div>
             </div>
             <p className="text-xs leading-6 text-stone-500">
-              生成时只处理本次新图片；全量同步用于把已有本地图片补传到 WebDAV。
+              生成时实时上传新图片到 {remoteLabel}；全量同步用于把已有本地图片补传到 {remoteLabel}。配置公开访问域名后，生图接口将直接返回公开图片链接。
             </p>
             <div className="rounded-lg border border-stone-100 bg-stone-50 px-3 py-2 text-xs text-stone-600">
               当前待保存模式：
               <span className="ml-1 font-medium text-stone-900">
                 {config?.image_storage?.enabled
                   ? config.image_storage.mode === "both"
-                    ? "本机 + WebDAV"
-                    : config.image_storage.mode === "webdav"
-                      ? "仅 WebDAV"
+                    ? `本机 + ${remoteLabel}`
+                    : config.image_storage.mode === "webdav" || config.image_storage.mode === "s3"
+                      ? `仅 ${remoteLabel}`
                       : "仅本机"
                   : "仅本机"}
               </span>
@@ -371,9 +395,25 @@ export function ConfigCard() {
             </div>
             <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
+                <label className="text-sm text-stone-700">存储类型</label>
+                <Select
+                  value={storageProvider}
+                  onValueChange={(value) => setImageStorageField("provider", value as ImageStorageProvider)}
+                  disabled={!config?.image_storage?.enabled}
+                >
+                  <SelectTrigger className="h-10 rounded-xl border-stone-200 bg-white shadow-none">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="s3">Cloudflare R2 / S3</SelectItem>
+                    <SelectItem value="webdav">WebDAV</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
                 <label className="text-sm text-stone-700">保存模式</label>
                 <Select
-                  value={String(config?.image_storage?.mode || "local")}
+                  value={currentModeValue}
                   onValueChange={(value) => setImageStorageField("mode", value as ImageStorageMode)}
                   disabled={!config?.image_storage?.enabled}
                 >
@@ -382,60 +422,140 @@ export function ConfigCard() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="local">仅本机</SelectItem>
-                    <SelectItem value="webdav">仅 WebDAV</SelectItem>
-                    <SelectItem value="both">本机 + WebDAV</SelectItem>
+                    <SelectItem value={remoteModeValue}>仅 {remoteLabel}</SelectItem>
+                    <SelectItem value="both">本机 + {remoteLabel}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2 md:col-span-2">
-                <label className="text-sm text-stone-700">WebDAV URL</label>
-                <Input
-                  value={String(config?.image_storage?.webdav_url || "")}
-                  onChange={(event) => setImageStorageField("webdav_url", event.target.value)}
-                  placeholder="https://example.com/dav"
-                  className="h-10 rounded-xl border-stone-200 bg-white"
-                  disabled={!config?.image_storage?.enabled}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">用户名</label>
-                <Input
-                  value={String(config?.image_storage?.webdav_username || "")}
-                  onChange={(event) => setImageStorageField("webdav_username", event.target.value)}
-                  className="h-10 rounded-xl border-stone-200 bg-white"
-                  disabled={!config?.image_storage?.enabled}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">密码</label>
-                <Input
-                  type="password"
-                  value={String(config?.image_storage?.webdav_password || "")}
-                  onChange={(event) => setImageStorageField("webdav_password", event.target.value)}
-                  className="h-10 rounded-xl border-stone-200 bg-white"
-                  disabled={!config?.image_storage?.enabled}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">远端目录</label>
-                <Input
-                  value={String(config?.image_storage?.webdav_root_path || "")}
-                  onChange={(event) => setImageStorageField("webdav_root_path", event.target.value)}
-                  placeholder="media2api/images"
-                  className="h-10 rounded-xl border-stone-200 bg-white"
-                  disabled={!config?.image_storage?.enabled}
-                />
-              </div>
+              {storageProvider === "s3" ? (
+                <>
+                  <div className="space-y-2">
+                    <label className="text-sm text-stone-700">Bucket 名称</label>
+                    <Input
+                      value={String(config?.image_storage?.s3_bucket || "")}
+                      onChange={(event) => setImageStorageField("s3_bucket", event.target.value)}
+                      placeholder="my-images-bucket"
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm text-stone-700">Account ID（Cloudflare R2）</label>
+                    <Input
+                      value={String(config?.image_storage?.s3_account_id || "")}
+                      onChange={(event) => setImageStorageField("s3_account_id", event.target.value)}
+                      placeholder="32 位 Account ID（填此项可留空 Endpoint）"
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm text-stone-700">S3 Endpoint（可选）</label>
+                    <Input
+                      value={String(config?.image_storage?.s3_endpoint || "")}
+                      onChange={(event) => setImageStorageField("s3_endpoint", event.target.value)}
+                      placeholder="https://<account_id>.r2.cloudflarestorage.com"
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm text-stone-700">Region</label>
+                    <Input
+                      value={String(config?.image_storage?.s3_region || "auto")}
+                      onChange={(event) => setImageStorageField("s3_region", event.target.value)}
+                      placeholder="auto"
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm text-stone-700">Access Key ID</label>
+                    <Input
+                      value={String(config?.image_storage?.s3_access_key_id || "")}
+                      onChange={(event) => setImageStorageField("s3_access_key_id", event.target.value)}
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm text-stone-700">Secret Access Key</label>
+                    <Input
+                      type="password"
+                      value={String(config?.image_storage?.s3_secret_access_key || "")}
+                      onChange={(event) => setImageStorageField("s3_secret_access_key", event.target.value)}
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm text-stone-700">对象前缀（远端目录）</label>
+                    <Input
+                      value={String(config?.image_storage?.s3_prefix ?? "")}
+                      onChange={(event) => setImageStorageField("s3_prefix", event.target.value)}
+                      placeholder="media2api/images（留空表示根目录）"
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <label className="text-sm text-stone-700">远端目录</label>
+                    <Input
+                      value={String(config?.image_storage?.webdav_root_path || "")}
+                      onChange={(event) => setImageStorageField("webdav_root_path", event.target.value)}
+                      placeholder="media2api/images"
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-3">
+                    <label className="text-sm text-stone-700">WebDAV URL</label>
+                    <Input
+                      value={String(config?.image_storage?.webdav_url || "")}
+                      onChange={(event) => setImageStorageField("webdav_url", event.target.value)}
+                      placeholder="https://example.com/dav"
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm text-stone-700">用户名</label>
+                    <Input
+                      value={String(config?.image_storage?.webdav_username || "")}
+                      onChange={(event) => setImageStorageField("webdav_username", event.target.value)}
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <label className="text-sm text-stone-700">密码</label>
+                    <Input
+                      type="password"
+                      value={String(config?.image_storage?.webdav_password || "")}
+                      onChange={(event) => setImageStorageField("webdav_password", event.target.value)}
+                      className="h-10 rounded-xl border-stone-200 bg-white"
+                      disabled={!config?.image_storage?.enabled}
+                    />
+                  </div>
+                </>
+              )}
               <div className="space-y-2 md:col-span-3">
-                <label className="text-sm text-stone-700">公开访问前缀</label>
+                <label className="text-sm text-stone-700">公开访问域名 / 前缀（Public Base URL）</label>
                 <Input
                   value={String(config?.image_storage?.public_base_url || "")}
                   onChange={(event) => setImageStorageField("public_base_url", event.target.value)}
-                  placeholder="https://cdn.example.com/media2api/images"
+                  placeholder={storageProvider === "s3" ? "https://pub-xxx.r2.dev 或 https://img.example.com" : "https://cdn.example.com/media2api/images"}
                   className="h-10 rounded-xl border-stone-200 bg-white"
                   disabled={!config?.image_storage?.enabled}
                 />
-                <p className="text-xs text-stone-500">留空时返回本应用 /images/... 代理地址；填入后直接返回公开图片地址。</p>
+                <p className="text-xs text-stone-500">
+                  {storageProvider === "s3"
+                    ? "填入 R2 公开访问域名（如 https://pub-xxx.r2.dev 或绑定的自定义域名）后，生图接口将直接返回公开图片地址（若设置了对象前缀且域名无路径，会自动拼接前缀）；留空时返回本应用 /images/... 代理地址。"
+                    : "留空时返回本应用 /images/... 代理地址；填入后直接返回公开图片地址。"}
+                </p>
               </div>
             </div>
           </div>

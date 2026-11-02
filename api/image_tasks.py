@@ -34,8 +34,6 @@ async def filter_or_log(call: LoggedCall, text: str) -> None:
     try:
         await run_in_threadpool(check_request, text)
     except HTTPException as exc:
-        from services.generation_protocol import record_image_rejection
-        record_image_rejection(call.identity, call.endpoint, call.request_params or {"model": call.model}, exc)
         call.log("调用失败", status="failed", error=str(exc.detail))
         raise
 

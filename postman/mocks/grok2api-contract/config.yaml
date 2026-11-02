@@ -1,0 +1,11 @@
+version: 1
+id: e98268dc-1bce-4e0f-96c3-61306abfaa97
+name: grok2api-contract
+slug: grok2api-contract
+protocol: http
+port: 4500
+interceptRequests: true
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true

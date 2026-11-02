@@ -18,6 +18,7 @@ import { Sub2APIConnections } from "./components/sub2api-connections";
 import { ImageQueueSettings } from "./components/image-queue-settings";
 import { UserKeysCard } from "./components/user-keys-card";
 import { useSettingsStore } from "./store";
+import { GrokSettings } from "@/components/grok-settings";
 
 const settingsTabs = [
   { value: "basic", title: "基础配置" },
@@ -90,6 +91,7 @@ function SettingsPageContent() {
         </div>
         <TabsContent value="basic">
           <ConfigCard />
+          <GrokSettings />
           <ImageQueueSettings />
         </TabsContent>
         <TabsContent value="proxy">

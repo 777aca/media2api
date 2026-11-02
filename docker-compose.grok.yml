@@ -1,0 +1,4 @@
+# Compatibility overlay for old startup commands. Grok Web now runs inside app.
+# Existing grok2api containers/volumes are not removed automatically.
+services:
+  app: {}

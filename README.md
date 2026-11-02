@@ -137,9 +137,9 @@ environment:
 
 - 兼容 `POST /v1/images/generations` 图片生成接口
 - 兼容 `POST /v1/images/edits` 图片编辑接口
-- 兼容面向图片场景的 `POST /v1/chat/completions`
-- 兼容面向图片场景的 `POST /v1/responses`
-- `GET /v1/models` 仅返回已接入且当前账号池符合接入条件的图片型号，根据本地账号状态即时更新，不拉取上游文本模型目录。
+- 兼容文本、搜索和图片场景的 `POST /v1/chat/completions` 与 `POST /v1/responses`，以及 Anthropic Messages 的部分能力。
+- `GET /v1/models` 合并账号可用的文本模型目录与本地图片入口；图片工作台使用独立的图片目录。
+- 原生集成 Grok Web 的对话、图片和文生视频，共用登录、API Key、工作台与调用日志；无需额外运行 grok2api，见 [Grok 接入](./docs/grok-integration.md)。
 - 账号页与设置页共享图片模型列表，支持刷新目录、更新时间与失败提示；详情见[图片模型目录与账号权限](./docs/model-catalog.md)。
 - 每次请求最多返回一张图片，`n` 仅支持 `1`，禁止批量生成
 - 支持生成可编辑 PPT 文件
@@ -182,12 +182,13 @@ environment:
 - [部署与升级](./docs/deployment.md)
 - [账号文本导入](./docs/account-import.md)
 - [图片 2.5 网页生图接入](./docs/image-models-2.5.md)
+- [Grok 接入](./docs/grok-integration.md)
 - [图片有效期](./docs/image-retention.md)
 - [Docker 一键更新与回滚](./docs/version-updates.md)
 
 ## API
 
-所有 AI 接口都需要请求头：
+以下接口（包括 Grok 模型和兼容入口 `/grok/v1`）统一使用 media2api 的 API Key，详见 [Grok 接入](./docs/grok-integration.md)：
 
 ```http
 Authorization: Bearer <auth-key>
@@ -197,7 +198,7 @@ Authorization: Bearer <auth-key>
 <summary><code>GET /v1/models</code></summary>
 <br>
 
-返回当前暴露的图片模型列表。
+返回账号可用的文本模型和当前暴露的图片模型列表。
 
 ```bash
 curl http://localhost:8000/v1/models \
@@ -210,7 +211,7 @@ curl http://localhost:8000/v1/models \
 
 | 字段     | 说明                                                                                                               |
 | :------- | :----------------------------------------------------------------------------------------------------------------- |
-| 返回模型 | `gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`，以及满足账号条件时的 Codex 图片入口；以实际响应为准 |
+| 返回模型 | 上游文本模型，以及 `gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst` 和满足账号条件时的 Codex 图片入口；以实际响应为准 |
 | 接入场景 | 可接入 Cherry Studio、New API 等上游或客户端                                                                       |
 
 <br>

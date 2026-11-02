@@ -64,8 +64,8 @@ class LegacyImageCallLoggingTests(unittest.TestCase):
         self.status()
         self.call()
         rows = [json.loads(line) for line in self.logs.path.read_text(encoding="utf-8").splitlines()]
-        rows[0]["time"] = "2026-10-08 23:59:59"
-        rows[1]["time"] = "2026-10-09 00:00:00"
+        rows[0]["time"] = "2026-10-08 23:59:59+08:00"
+        rows[1]["time"] = "2026-10-09 00:00:00+08:00"
         self.logs.path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
         self.assertEqual(len(self.logs.list(start_date="2026-10-09", end_date="2026-10-09")), 1)
         self.assertEqual(self.logs.list(end_date="2026-10-08"), [])

@@ -14,6 +14,7 @@ function formatSyncTime(value: string | null | undefined) {
 export function ModelCatalog({ state }: { state: ModelCatalogState }) {
   const { catalog, error, loading, syncing, sync } = state;
   const models = catalog?.data ?? [];
+  const hasGrok = models.some(model => model.source === "grok_web");
   const syncState = catalog?.sync;
   const hasPreviousSync = models.length > 0 || Boolean(syncState?.last_success_at);
   const syncMessage = syncState?.status === "partial"
@@ -38,9 +39,9 @@ export function ModelCatalog({ state }: { state: ModelCatalogState }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-stone-700">
-            可用图片模型 <span className="text-stone-400">({models.length})</span>
+            {hasGrok ? "可用模型" : "可用图片模型"} <span className="text-stone-400">({models.length})</span>
           </h3>
-          <p className="mt-1 text-xs leading-5 text-stone-500">展示本项目已接入、且当前账号池符合接入条件的图片型号；点击模型名可复制。</p>
+          <p className="mt-1 text-xs leading-5 text-stone-500">{hasGrok ? "当前号池可用的图片、Grok 对话与视频模型；点击模型名可复制。" : "展示本项目已接入、且当前账号池符合接入条件的图片型号；点击模型名可复制。"}</p>
         </div>
         <Button
           variant="outline"
@@ -56,7 +57,7 @@ export function ModelCatalog({ state }: { state: ModelCatalogState }) {
       <div className="space-y-1 text-xs leading-5 text-stone-500" aria-live="polite">
         <p>最近更新：{formatSyncTime(syncState?.last_success_at)}</p>
         {syncState?.status === "success" && !error && (
-          <p>已根据 {syncState.source_count} 个活跃账号更新图片目录。</p>
+          <p>已根据 {syncState.source_count} 个活跃账号更新{hasGrok ? "模型" : "图片"}目录。</p>
         )}
         {(error || syncMessage) && (
           <div role="alert" className="flex items-start gap-1.5 text-amber-700">
@@ -76,7 +77,7 @@ export function ModelCatalog({ state }: { state: ModelCatalogState }) {
           >
             <span className="break-all font-mono">{model.id}</span>
             <span className="rounded bg-stone-100 px-1 py-0.5 text-[10px] text-stone-500">
-              {model.entry_kind === "web_image" ? "网页生图" : model.entry_kind === "image_api" ? "图片接口" : "项目入口"}
+              {model.source === "grok_web" ? `Grok · ${model.capabilities?.join("/") || "Web"}` : model.entry_kind === "web_image" ? "网页生图" : model.entry_kind === "image_api" ? "图片接口" : "项目入口"}
             </span>
             <Copy className="size-3 text-stone-400" aria-hidden="true" />
           </button>

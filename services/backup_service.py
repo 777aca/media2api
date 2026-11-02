@@ -9,6 +9,7 @@ import random
 import subprocess
 import tarfile
 import threading
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -654,8 +655,20 @@ class BackupService:
                     self._add_file_to_archive(archive, snapshot, "data/generation-runtime.sqlite")
                     self._add_directory_to_archive(archive, DATA_DIR / "generation-tasks", "data/generation-tasks")
             if include.get("images"):
+                self._add_directory_to_archive(archive, DATA_DIR / "videos", "data/videos")
                 self._add_file_to_archive(archive, TAGS_FILE, "data/image_tags.json")
                 self._add_directory_to_archive(archive, config.images_dir, "data/images")
+            if (DATA_DIR / "native-providers.sqlite").exists():
+                import sqlite3
+                import tempfile
+                from services.providers.grok_store import get_store
+                store = get_store()
+                with tempfile.TemporaryDirectory(prefix="media2api-native-backup-") as temp:
+                    snapshot = Path(temp) / "native-providers.sqlite"
+                    with store.lock, closing(sqlite3.connect(snapshot)) as target:
+                        store.db.backup(target)
+                    self._add_file_to_archive(archive, snapshot, "data/native-providers.sqlite")
+                    self._add_file_to_archive(archive, DATA_DIR / ".native-provider-key", "data/.native-provider-key")
         return buffer.getvalue()
 
     def _add_bytes_to_archive(self, archive: tarfile.TarFile, name: str, payload: bytes) -> None:

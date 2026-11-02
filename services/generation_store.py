@@ -71,9 +71,6 @@ class GenerationStore:
                 id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, phase TEXT NOT NULL, category TEXT,
                 attempt INTEGER, outcome TEXT, created REAL NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS rejections (
-                id INTEGER PRIMARY KEY, owner TEXT, model TEXT, channel TEXT, category TEXT, code TEXT, created REAL NOT NULL
-            );
             CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY,value TEXT NOT NULL);
         """)
         columns = {row["name"] for row in self.db.execute("PRAGMA table_info(tasks)")}
@@ -83,7 +80,6 @@ class GenerationStore:
                                  "recovery_deadline": "REAL", "recovery_next_at": "REAL"}.items():
             if name not in columns:
                 self.db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
-        self.db.execute("INSERT OR IGNORE INTO metadata VALUES ('enabled_at',?)", (str(time.time()),))
 
     @contextmanager
     def transaction(self):
@@ -156,11 +152,6 @@ class GenerationStore:
                            (uuid.uuid4().hex, job_id, ordinal + 1, owner, "queued", "queued", now, now))
             db.execute("UPDATE key_usage SET reserved=reserved+? WHERE owner=?", (count, owner))
         return job_id
-
-    def reject(self, identity: dict, model: str, channel: str, code: str, category: str = "local_rejection") -> None:
-        with self.lock:
-            self.db.execute("INSERT INTO rejections(owner,model,channel,category,code,created) VALUES (?,?,?,?,?,?)",
-                            (identity.get("id"), model, channel, category, code, time.time()))
 
     def task(self, task_id: str, *, include_output: bool = True) -> dict:
         columns = _TASK_METADATA + (",t.output" if include_output else "")

@@ -71,6 +71,9 @@ class GenerationRuntime:
 
     @staticmethod
     def _execute_image(request, index: int, total: int, row: dict):
+        if row.get("channel") == "grok_web":
+            from services.providers.registry import execute_grok_image
+            return execute_grok_image(request, index, total, row)
         from services.generation_execution import execute_image
         return execute_image(request, index, total, row)
 
@@ -159,6 +162,9 @@ class GenerationRuntime:
         # URLs used only for output rendering must not break idempotency on reconnect.
         fingerprint = hashlib.sha256(dump({k: v for k, v in payload.items() if k != "base_url"}).encode()).hexdigest()
         channel = "codex" if is_codex_image_model(request.model) else "web"
+        from services.providers.grok_catalog import is_grok
+        if is_grok(request.model):
+            channel = "grok_web"
         if context.client_task_ids:
             if len(context.client_task_ids) != request.n or len(set(context.client_task_ids)) != request.n:
                 raise GenerationRuntimeError("图片任务标识必须唯一且与张数一致", "invalid_image_request", 400)
@@ -181,14 +187,12 @@ class GenerationRuntime:
                 task_id = self.store.submit(job_id=job_id, identity=identity, endpoint=context.endpoint,
                                             external_id=context.idempotency_key, fingerprint=fingerprint,
                                             payload=payload, channel=channel, count=request.n, settings=self.settings_getter())
-            except GenerationRuntimeError as exc:
+            except GenerationRuntimeError:
                 if job_id:
                     orphan = self.directory / "generation-tasks" / job_id
                     (orphan / "inputs.json").unlink(missing_ok=True)
                     if orphan.exists():
                         orphan.rmdir()
-                self.store.reject(identity, request.model, channel, exc.code)
-                exc.image_rejection_recorded = True
                 raise
         context.task_id = task_id
         self._wake.set()
@@ -306,6 +310,9 @@ class GenerationRuntime:
         if not self._requires_account or row["phase"] in {"raw_saved", "output_saved"}:
             return None, ""
         pool = self.account_pool
+        if pool is None and row["channel"] == "grok_web":
+            from services.providers.grok_accounts import pool as grok_pool
+            pool = grok_pool
         if pool is None:
             from services.protocol.conversation import account_service
             pool = account_service
@@ -384,6 +391,8 @@ class GenerationRuntime:
         self.store.checkpoint(task_id, **values)
 
     def _cleanup_conversation(self, row: dict) -> None:
+        if row.get("channel") == "grok_web":
+            return
         if not row["conversation_id"]:
             return
         from services.config import config

@@ -30,11 +30,19 @@ DEFAULT_BACKUP_INCLUDE = {
 
 DEFAULT_IMAGE_STORAGE = {
     "enabled": False,
+    "provider": "webdav",
     "mode": "local",
     "webdav_url": "",
     "webdav_username": "",
     "webdav_password": "",
     "webdav_root_path": "media2api/images",
+    "s3_account_id": "",
+    "s3_endpoint": "",
+    "s3_region": "auto",
+    "s3_access_key_id": "",
+    "s3_secret_access_key": "",
+    "s3_bucket": "",
+    "s3_prefix": "media2api/images",
     "public_base_url": "",
 }
 
@@ -136,20 +144,55 @@ def _normalize_backup_state(value: object) -> dict[str, object]:
 
 def _normalize_image_storage_settings(value: object) -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
-    mode = str(source.get("mode") or "local").strip().lower()
-    if mode not in {"local", "webdav", "both"}:
+    raw_provider = str(source.get("provider") or "").strip().lower()
+    raw_mode = str(source.get("mode") or "local").strip().lower()
+    if raw_provider in {"s3", "r2", "cloudflare_r2"}:
+        provider = "s3"
+    elif raw_provider == "webdav":
+        provider = "webdav"
+    elif raw_mode in {"s3", "r2", "cloudflare_r2"} or (
+        str(source.get("s3_bucket") or "").strip() and not str(source.get("webdav_url") or "").strip()
+    ):
+        provider = "s3"
+    else:
+        provider = "webdav"
+
+    if raw_mode in {"r2", "cloudflare_r2"}:
+        mode = "s3"
+    elif raw_mode in {"local", "webdav", "s3", "both"}:
+        mode = raw_mode
+    else:
         mode = "local"
+
     enabled = _normalize_bool(source.get("enabled"), False)
     if not enabled:
         mode = "local"
+    elif provider == "s3" and mode == "webdav":
+        mode = "s3"
+    elif provider == "webdav" and mode == "s3":
+        mode = "webdav"
+
     root_path = str(source.get("webdav_root_path") or DEFAULT_IMAGE_STORAGE["webdav_root_path"]).strip().strip("/")
+    if "s3_prefix" in source and source.get("s3_prefix") is not None:
+        s3_prefix = str(source.get("s3_prefix") or "").strip().strip("/")
+    else:
+        s3_prefix = str(DEFAULT_IMAGE_STORAGE["s3_prefix"])
+
     return {
         "enabled": enabled,
+        "provider": provider,
         "mode": mode,
         "webdav_url": str(source.get("webdav_url") or "").strip().rstrip("/"),
         "webdav_username": str(source.get("webdav_username") or "").strip(),
         "webdav_password": str(source.get("webdav_password") or "").strip(),
         "webdav_root_path": root_path or str(DEFAULT_IMAGE_STORAGE["webdav_root_path"]),
+        "s3_account_id": str(source.get("s3_account_id") or "").strip(),
+        "s3_endpoint": str(source.get("s3_endpoint") or "").strip().rstrip("/"),
+        "s3_region": str(source.get("s3_region") or "auto").strip() or "auto",
+        "s3_access_key_id": str(source.get("s3_access_key_id") or "").strip(),
+        "s3_secret_access_key": str(source.get("s3_secret_access_key") or "").strip(),
+        "s3_bucket": str(source.get("s3_bucket") or "").strip().strip("/"),
+        "s3_prefix": s3_prefix,
         "public_base_url": str(source.get("public_base_url") or "").strip().rstrip("/"),
     }
 
@@ -271,6 +314,19 @@ def _normalize_proxy_runtime_settings(value: object) -> dict[str, object]:
 
 def _validate_image_storage_settings(settings: dict[str, object]) -> None:
     if not _normalize_bool(settings.get("enabled"), False):
+        return
+    provider = str(settings.get("provider") or "webdav").strip().lower()
+    if provider == "s3":
+        endpoint = str(settings.get("s3_endpoint") or "").strip()
+        account_id = str(settings.get("s3_account_id") or "").strip()
+        if not endpoint and not account_id:
+            raise ValueError("启用 R2/S3 图片存储后必须填写 Account ID 或 S3 Endpoint")
+        if not str(settings.get("s3_access_key_id") or "").strip():
+            raise ValueError("启用 R2/S3 图片存储后必须填写 Access Key ID")
+        if not str(settings.get("s3_secret_access_key") or "").strip():
+            raise ValueError("启用 R2/S3 图片存储后必须填写 Secret Access Key")
+        if not str(settings.get("s3_bucket") or "").strip():
+            raise ValueError("启用 R2/S3 图片存储后必须填写 Bucket 名称")
         return
     if not str(settings.get("webdav_url") or "").strip():
         raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
