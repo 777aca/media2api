@@ -111,6 +111,53 @@ class WebImage25RequestTests(unittest.TestCase):
                     settle.assert_called_once_with("private-token", False)
                     backend.close.assert_called_once()
 
+    def test_prepare_image_conversation_includes_attachment_mime_types(self) -> None:
+        backend = OpenAIBackendAPI.__new__(OpenAIBackendAPI)
+        backend.base_url = "https://example.invalid"
+        backend.session = mock.Mock()
+        response = backend.session.post.return_value
+        response.status_code = 200
+        response.json.return_value = {"conduit_token": "token-with-attachment"}
+        with mock.patch.object(backend, "_image_headers", return_value={}):
+            conduit = backend._prepare_image_conversation("edit", mock.Mock(), "gpt-image-2", attachment_mime_types=["image/png"])
+            self.assertEqual(conduit, "token-with-attachment")
+            call_payload = backend.session.post.call_args.kwargs["json"]
+            self.assertEqual(call_payload["attachment_mime_types"], ["image/png"])
+
+    def test_conversation_state_filters_user_input_image_ids(self) -> None:
+        state = conversation.ConversationState()
+        # Input message event containing user's uploaded reference image
+        input_payload = '{"type":"input_message","input_message":{"author":{"role":"user"},"content":{"content_type":"multimodal_text","parts":[{"asset_pointer":"sediment://file_input_123"}]}},"conversation_id":"c-1"}'
+        conversation.update_conversation_state(state, input_payload, {"type": "input_message", "input_message": {"author": {"role": "user"}}})
+        # User input file must NOT be in output file_ids or sediment_ids
+        self.assertNotIn("file_input_123", state.sediment_ids)
+        self.assertIn("file_input_123", state.input_file_ids)
+
+        # Tool output event containing generated image
+        tool_payload = '{"v":{"message":{"author":{"role":"tool"},"content":{"content_type":"multimodal_text","parts":[{"asset_pointer":"file-service://file_output_456"}]},"metadata":{"async_task_type":"image_gen"}}},"conversation_id":"c-1"}'
+        tool_event = {"v": {"message": {"author": {"role": "tool"}, "metadata": {"async_task_type": "image_gen"}, "content": {"content_type": "multimodal_text", "parts": [{"asset_pointer": "file-service://file_output_456"}]}}}}
+        conversation.update_conversation_state(state, tool_payload, tool_event)
+        self.assertIn("file_output_456", state.file_ids)
+        self.assertNotIn("file_input_123", state.file_ids)
+        base_event = conversation.conversation_base_event("conversation.event", state)
+        self.assertEqual(base_event["file_ids"], ["file_output_456"])
+        self.assertNotIn("file_input_123", base_event["sediment_ids"])
+
+    def test_image_edit_grok_model_auto_switch(self) -> None:
+        from io import BytesIO
+        img = BytesIO()
+        Image.new("RGB", (2, 2)).save(img, format="PNG")
+        raw = img.getvalue()
+        with mock.patch("services.protocol.openai_v1_image_edit.stream_image_outputs_with_pool") as pool_mock:
+            pool_mock.return_value = iter([])
+            openai_v1_image_edit.handle({
+                "model": "grok-imagine-image",
+                "prompt": "make it blue",
+                "images": [(raw, "test.png", "image/png")],
+            })
+            req = pool_mock.call_args[0][0]
+            self.assertEqual(req.model, "grok-imagine-image-edit")
+
 
 if __name__ == "__main__":
     unittest.main()

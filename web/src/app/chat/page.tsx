@@ -25,12 +25,16 @@ function history(value: Record<string, unknown>): History | null {
   }
   return { id: value.id, title: String(value.title || "对话"), model: value.model, messages };
 }
+function newId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
+}
 function Chat() {
   const [models, setModels] = useState<string[]>(["auto"]);
   const [model, setModel] = useState("auto");
   const [messages, setMessages] = useState<Message[]>([]);
   const [histories, setHistories] = useState<History[]>([]);
-  const [id, setId] = useState(() => crypto.randomUUID());
+  const [id, setId] = useState(newId);
   const [prompt, setPrompt] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -78,7 +82,7 @@ function Chat() {
       setBusy(false);
     }
   }
-  function newChat() { setId(crypto.randomUUID()); setMessages([]); setImages([]); setPrompt(""); setError(""); follow.current = true; }
+  function newChat() { setId(newId()); setMessages([]); setImages([]); setPrompt(""); setError(""); follow.current = true; }
   return <div className="creative-workspace flex min-h-0 flex-col">
     <div className="flex shrink-0 items-center justify-between gap-2 max-[360px]:flex-wrap"><CreativeTabs /><div className="flex items-center gap-1">
       <Button variant="ghost" size="icon" className="rounded-full" title="新建对话" aria-label="新建对话" disabled={busy} onClick={newChat}><Plus /></Button>

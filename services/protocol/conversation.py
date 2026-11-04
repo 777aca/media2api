@@ -349,6 +349,7 @@ class ConversationState:
     conversation_id: str = ""
     file_ids: list[str] = field(default_factory=list)
     sediment_ids: list[str] = field(default_factory=list)
+    input_file_ids: set[str] = field(default_factory=set)
     blocked: bool = False
     tool_invoked: bool | None = None
     turn_use_case: str = ""
@@ -612,13 +613,28 @@ def is_image_tool_event(event: dict[str, Any]) -> bool:
 
 
 def _is_user_message_event(event: dict[str, Any]) -> bool:
-    """检查事件是否来自 user 角色消息。"""
+    """检查事件是否来自 user 角色消息或输入消息。"""
+    if not isinstance(event, dict):
+        return False
+    if event.get("type") == "input_message" or "input_message" in event:
+        return True
     value = event.get("v")
     message = event.get("message") or (value.get("message") if isinstance(value, dict) else None)
     if isinstance(message, dict):
         author = message.get("author") or {}
         if str(author.get("role") or "").strip().lower() == "user":
             return True
+    if isinstance(value, list):
+        for op in value:
+            if isinstance(op, dict):
+                p = str(op.get("p") or "")
+                if "/input_message" in p:
+                    return True
+                v = op.get("v")
+                if isinstance(v, dict):
+                    author = v.get("author") or {}
+                    if str(author.get("role") or "").strip().lower() == "user":
+                        return True
     return False
 
 
@@ -636,14 +652,19 @@ def update_conversation_state(state: ConversationState, payload: str, event: dic
     #      BUT only when the event is not a user message.
     is_patch_event = isinstance(event, dict) and event.get("o") == "patch"
     is_user_msg = isinstance(event, dict) and _is_user_message_event(event)
+    if is_user_msg:
+        state.input_file_ids.update(file_ids)
+        state.input_file_ids.update(sediment_ids)
     image_context = (
         (isinstance(event, dict) and is_image_tool_event(event))
         or (state.tool_invoked is True and not is_user_msg)
         or (is_patch_event and not is_user_msg and ("asset_pointer" in payload or "file-service://" in payload))
     )
     if image_context:
-        add_unique(state.file_ids, file_ids)
-        add_unique(state.sediment_ids, sediment_ids)
+        filtered_file_ids = [fid for fid in file_ids if fid not in state.input_file_ids]
+        filtered_sediment_ids = [sid for sid in sediment_ids if sid not in state.input_file_ids]
+        add_unique(state.file_ids, filtered_file_ids)
+        add_unique(state.sediment_ids, filtered_sediment_ids)
     if not isinstance(event, dict):
         return
     state.conversation_id = str(event.get("conversation_id") or state.conversation_id)
@@ -669,8 +690,8 @@ def conversation_base_event(event_type: str, state: ConversationState, **extra: 
         "type": event_type,
         "text": state.text,
         "conversation_id": state.conversation_id,
-        "file_ids": list(state.file_ids),
-        "sediment_ids": list(state.sediment_ids),
+        "file_ids": [fid for fid in state.file_ids if fid not in state.input_file_ids],
+        "sediment_ids": [sid for sid in state.sediment_ids if sid not in state.input_file_ids],
         "blocked": state.blocked,
         "tool_invoked": state.tool_invoked,
         "turn_use_case": state.turn_use_case,
@@ -679,8 +700,11 @@ def conversation_base_event(event_type: str, state: ConversationState, **extra: 
 
 
 def iter_conversation_payloads(payloads: Iterator[str], history_text: str = "",
-                               history_messages: list[str] | None = None) -> Iterator[dict[str, Any]]:
+                               history_messages: list[str] | None = None,
+                               input_file_ids: set[str] | None = None) -> Iterator[dict[str, Any]]:
     state = ConversationState()
+    if input_file_ids:
+        state.input_file_ids.update(input_file_ids)
     history_messages = history_messages or []
     history_index = 0
     for payload in payloads:
@@ -739,7 +763,8 @@ def conversation_events(
         system_hints=["picture_v2"] if image_model else None,
         thinking_effort=thinking_effort if not image_model else "",
     )
-    yield from iter_conversation_payloads(payloads, history_text, history_messages)
+    input_file_ids = set(getattr(backend, "_last_image_input_file_ids", []))
+    yield from iter_conversation_payloads(payloads, history_text, history_messages, input_file_ids=input_file_ids)
 
 
 def text_backend(model: str = "auto") -> OpenAIBackendAPI | CodexTextBackend:
@@ -924,8 +949,9 @@ def stream_image_outputs(
             )
 
     conversation_id = str(last.get("conversation_id") or "")
-    file_ids = [str(item) for item in last.get("file_ids") or []]
-    sediment_ids = [str(item) for item in last.get("sediment_ids") or []]
+    input_file_ids = set(getattr(backend, "_last_image_input_file_ids", []))
+    file_ids = [str(item) for item in last.get("file_ids") or [] if str(item) not in input_file_ids]
+    sediment_ids = [str(item) for item in last.get("sediment_ids") or [] if str(item) not in input_file_ids]
     message = str(last.get("text") or "").strip()
     logger.info({
         "event": "image_stream_resolve_start",
@@ -1395,6 +1421,8 @@ def _generate_single_image(request: ConversationRequest, index: int, total: int)
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:
     from services.providers.grok_catalog import is_grok, resolve
     if is_grok(request.model):
+        if request.images and request.model != "grok-imagine-image-edit":
+            request.model = "grok-imagine-image-edit"
         spec = resolve(request.model)
         if request.quality not in {"", "auto"}:
             raise ImageGenerationError("Grok Web 不支持 quality 参数，请选择 auto", status_code=400)

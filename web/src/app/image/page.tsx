@@ -1080,6 +1080,11 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
       setReferenceImageFiles((prev) => [...prev, ...files]);
       setReferenceImages((prev) => [...prev, ...previews]);
+      setImageModel((current) =>
+        current.startsWith("grok-imagine-image") && current !== "grok-imagine-image-edit"
+          ? ("grok-imagine-image-edit" as ImageModel)
+          : current,
+      );
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }

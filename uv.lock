@@ -398,7 +398,7 @@ wheels = [
 
 [[package]]
 name = "media2api"
-version = "0.1.9"
+version = "0.1.10"
 source = { virtual = "." }
 dependencies = [
     { name = "cryptography" },

@@ -131,9 +131,51 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.assertEqual(self.calls.count(("web", "pro")), 2)
         self.assertEqual(self.calls.count(("codex", "pro")), 2)
         self.now += 301
-        self.catalog.list_models()
+        stale = self.catalog.list_models()
+        self.assertIn("pro-only", {item["id"] for item in stale["data"]})
+        self.assertTrue(self.catalog.wait_for_refresh(timeout=5))
         self.assertEqual(self.calls.count(("web", "pro")), 3)
         self.assertEqual(self.calls.count(("codex", "pro")), 3)
+
+    def test_expired_cache_returns_immediately_while_one_background_refresh_runs(self) -> None:
+        self.catalog.list_models()
+        baseline = len(self.calls)
+        self.outcomes["pro"] = model_list("pro-new")
+        self.now += 301
+        self.release_fetches.clear()
+        try:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                started = time.monotonic()
+                futures = [executor.submit(self.catalog.list_models) for _ in range(4)]
+                results = [future.result(timeout=2) for future in futures]
+                self.assertLess(time.monotonic() - started, 2)
+            for result in results:
+                self.assertIn("pro-only", {item["id"] for item in result["data"]})
+                self.assertNotIn("pro-new", {item["id"] for item in result["data"]})
+            self.assertEqual(self.catalog.route_for_model("pro-only").account_ids, frozenset({self.account_id("pro")}))
+            self.assertFalse(self.catalog.wait_for_refresh(timeout=0.1))
+        finally:
+            self.release_fetches.set()
+        self.assertTrue(self.catalog.wait_for_refresh(timeout=5))
+        # 卡住期间的多次读取只触发一批刷新：4 个账号 × 2 个渠道 + 匿名源。
+        self.assertEqual(len(self.calls) - baseline, 9)
+        self.assertIn("pro-new", {item["id"] for item in self.catalog.list_models()["data"]})
+
+    def test_refresh_deadline_stops_waiting_for_stuck_sources_and_keeps_cache(self) -> None:
+        self.catalog.list_models()
+        self.catalog._refresh_deadline_seconds = 0.3
+        self.release_fetches.clear()
+        try:
+            started = time.monotonic()
+            result = self.catalog.get_catalog(force_refresh=True)
+            self.assertLess(time.monotonic() - started, 3)
+        finally:
+            self.release_fetches.set()
+        self.assertEqual(result["sync"]["status"], "failed")
+        self.assertTrue(result["sync"]["errors"])
+        self.assertTrue(all(error["code"] == "refresh_timeout" for error in result["sync"]["errors"]))
+        self.assertIn("pro-only", {item["id"] for item in result["data"]})
+        self.assertEqual(self.catalog.route_for_model("pro-only").account_ids, frozenset({self.account_id("pro")}))
 
     def test_overlapping_force_refreshes_share_one_batch_and_four_source_limit(self) -> None:
         for index in range(5):
@@ -163,7 +205,9 @@ class ModelCatalogServiceTests(unittest.TestCase):
         result = self.catalog.list_models()
         self.assertIn("pro-only", {item["id"] for item in result["data"]})
         self.assertEqual(self.catalog.route_for_model("pro-only").account_ids, frozenset({self.account_id("pro")}))
+        self.assertTrue(self.catalog.wait_for_refresh(timeout=5))
         self.assertEqual(self.catalog.get_catalog()["sync"]["status"], "partial")
+        self.assertIn("pro-only", {item["id"] for item in self.catalog.list_models()["data"]})
 
     def test_deleted_disabled_and_abnormal_accounts_drop_cached_permissions(self) -> None:
         self.codex_outcomes["pro"] = model_list("pro-codex-only")

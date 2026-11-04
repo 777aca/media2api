@@ -872,7 +872,13 @@ class OpenAIBackendAPI:
             retry_after = int(retry_after_header) if str(retry_after_header or "").isdigit() else None
             raise UpstreamHTTPError(path, error.code, body, retry_after=retry_after) from error
 
-    def _prepare_image_conversation(self, prompt: str, requirements: ChatRequirements, model: str) -> str:
+    def _prepare_image_conversation(
+            self,
+            prompt: str,
+            requirements: ChatRequirements,
+            model: str,
+            attachment_mime_types: Optional[list[str]] = None,
+    ) -> str:
         """为图片生成准备 conduit token。"""
         path = "/backend-api/f/conversation/prepare"
         upstream_model, thinking_effort = self._image_model_settings(model)
@@ -897,6 +903,8 @@ class OpenAIBackendAPI:
         }
         if thinking_effort:
             payload["thinking_effort"] = thinking_effort
+        if attachment_mime_types:
+            payload["attachment_mime_types"] = attachment_mime_types
         response = self.session.post(
             self.base_url + path,
             headers=self._image_headers(path, requirements),
@@ -2617,12 +2625,14 @@ class OpenAIBackendAPI:
             raise RuntimeError("access_token is required for image endpoints")
         self._report_progress("uploading")
         references = [self._upload_image(image, f"image_{idx}.png") for idx, image in enumerate(images, start=1)]
+        self._last_image_input_file_ids = [ref["file_id"] for ref in references if ref.get("file_id")]
         self._report_progress("bootstrapping")
         self._bootstrap()
         self._report_progress("getting_token")
         requirements = self._get_chat_requirements()
         self._report_progress("preparing_conversation")
-        conduit_token = self._prepare_image_conversation(prompt, requirements, model)
+        attachment_mime_types = [item["mime_type"] for item in references if item.get("mime_type")] or None
+        conduit_token = self._prepare_image_conversation(prompt, requirements, model, attachment_mime_types=attachment_mime_types)
         self._report_progress("starting_generation")
         response = self._start_image_generation(prompt, requirements, conduit_token, model, references)
         self._report_progress("generating")

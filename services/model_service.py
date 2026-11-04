@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from threading import Condition, RLock
+from threading import Condition, RLock, Thread
 from typing import Any
 
 from curl_cffi.requests.exceptions import Timeout
@@ -45,16 +45,20 @@ class ModelCatalogService:
         *,
         backend_factory: Callable[..., Any] = OpenAIBackendAPI,
         cache_ttl_seconds: float = 300,
+        refresh_deadline_seconds: float = 15,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._accounts = accounts
         self._backend_factory = backend_factory
         self._cache_ttl_seconds = max(1.0, float(cache_ttl_seconds))
+        # 固定的整体截止时间，与账号数量无关；超时的来源保留旧缓存并记为 refresh_timeout。
+        self._refresh_deadline_seconds = max(0.1, float(refresh_deadline_seconds))
         self._clock = clock
         self._lock = RLock()
         self._condition = Condition(self._lock)
         self._refreshing = False
         self._refresh_generation = 0
+        self._has_catalog = False
         self._expires_at = 0.0
         self._account_signature: tuple[tuple[str, ...], ...] = ()
         self._anonymous_models: dict[str, dict[str, Any]] = {}
@@ -151,21 +155,36 @@ class ModelCatalogService:
 
     def _refresh(self, active: dict[str, dict], signature: tuple[tuple[str, ...], ...]) -> None:
         outcomes: dict[tuple[str | None, str], tuple[dict[str, dict[str, Any]] | None, str | None]] = {}
-        with ThreadPoolExecutor(max_workers=min(4, len(active) * 2 + 1)) as executor:
+        deadline = time.monotonic() + self._refresh_deadline_seconds
+
+        def remaining() -> float:
+            return max(0.0, deadline - time.monotonic())
+
+        # 不使用 with：退出时的 shutdown(wait=True) 会等待卡住的线程，使截止时间失效。
+        executor = ThreadPoolExecutor(max_workers=min(4, len(active) * 2 + 1))
+        try:
             futures = {(None, "web"): executor.submit(self._fetch_source, None)}
             preparations = {
                 account_id: executor.submit(self._prepare_account, account)
                 for account_id, account in active.items()
             }
             for account_id, preparation in preparations.items():
-                account, code = preparation.result()
+                try:
+                    account, code = preparation.result(timeout=remaining())
+                except FutureTimeout:
+                    account, code = None, "refresh_timeout"
                 for channel in ("web", "codex"):
                     if account is None:
                         outcomes[(account_id, channel)] = None, code
                     else:
                         futures[(account_id, channel)] = executor.submit(self._fetch_source, account, channel)
             for source, future in futures.items():
-                outcomes[source] = future.result()
+                try:
+                    outcomes[source] = future.result(timeout=remaining())
+                except FutureTimeout:
+                    outcomes[source] = None, "refresh_timeout"
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
         # 请求过程中删除或禁用的账号不能被已开始的请求结果重新加入。
         current_active, current_signature = self._account_snapshot()
@@ -210,18 +229,23 @@ class ModelCatalogService:
             )
             self._account_signature = current_signature if same_accounts else signature
             self._expires_at = self._clock() + self._cache_ttl_seconds if same_accounts else 0.0
+            self._has_catalog = True
 
     def _ensure_catalog(self, *, force_refresh: bool = False) -> None:
         active, signature = self._account_snapshot()
         with self._condition:
             if self._refreshing:
-                # 普通读取和强制同步均共享已经开始的同一批同步。
+                if not force_refresh and self._has_catalog and signature == self._account_signature:
+                    return  # 已有可用缓存时，普通读取不等待进行中的刷新。
+                # 强制同步及冷启动共享已经开始的同一批同步。
                 generation = self._refresh_generation
                 while self._refreshing and self._refresh_generation == generation:
                     self._condition.wait()
                 return
             if not force_refresh and signature == self._account_signature and self._clock() < self._expires_at:
                 return
+            # 缓存已存在且账号集合未变：过期后返回旧缓存，后台刷新；账号变化、强制同步和冷启动仍同步等待。
+            stale_ok = not force_refresh and self._has_catalog and signature == self._account_signature
             self._refreshing = True
             self._sync["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
             self._models_by_account_id = {
@@ -232,6 +256,15 @@ class ModelCatalogService:
                 account_id: models for account_id, models in self._codex_models_by_account_id.items()
                 if account_id in active
             }
+        if stale_ok:
+            Thread(
+                target=self._background_refresh, args=(active, signature),
+                name="model-catalog-refresh", daemon=True,
+            ).start()
+            return
+        self._run_refresh(active, signature)
+
+    def _run_refresh(self, active: dict[str, dict], signature: tuple[tuple[str, ...], ...]) -> None:
         try:
             self._refresh(active, signature)
         finally:
@@ -239,6 +272,17 @@ class ModelCatalogService:
                 self._refresh_generation += 1
                 self._refreshing = False
                 self._condition.notify_all()
+
+    def _background_refresh(self, active: dict[str, dict], signature: tuple[tuple[str, ...], ...]) -> None:
+        try:
+            self._run_refresh(active, signature)
+        except Exception as exc:  # 后台刷新失败不影响已有缓存；异常原文可能携带凭据，只记录类型。
+            logger.warning({"event": "model_catalog_background_refresh_failed", "error_type": type(exc).__name__})
+
+    def wait_for_refresh(self, timeout: float | None = None) -> bool:
+        """等待进行中的刷新结束；返回 True 表示当前没有进行中的刷新。"""
+        with self._condition:
+            return self._condition.wait_for(lambda: not self._refreshing, timeout)
 
     def _union(self) -> dict[str, dict[str, Any]]:
         active, _signature = self._account_snapshot()

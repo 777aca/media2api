@@ -61,8 +61,11 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     masks = body.get("mask") or []
     model = str(body.get("model") or "gpt-image-2")
     from services.providers.grok_catalog import is_grok
-    if is_grok(model) and masks:
-        raise ImageGenerationError("Grok Web 不支持 mask", status_code=400)
+    if is_grok(model):
+        if masks:
+            raise ImageGenerationError("Grok Web 不支持 mask", status_code=400)
+        if model != "grok-imagine-image-edit":
+            model = "grok-imagine-image-edit"
     web_model_25 = is_web_image_model_25(model)
     if web_model_25 and len(masks) > 1:
         raise ImageGenerationError("The image 2.5 editing endpoint accepts one mask.", status_code=400,

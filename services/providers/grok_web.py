@@ -281,7 +281,7 @@ class GrokWeb:
         if value.get("terminalError"):
             raise GrokError("Grok 拒绝了上传图片", 400)
         metadata = value.get("fileMetadata") or {}
-        file_id = metadata.get("fileMetadataId") or (None if edit else metadata.get("fileId") or value.get("uploadId"))
+        file_id = metadata.get("fileMetadataId") or metadata.get("fileId") or value.get("uploadId")
         if not file_id:
             raise GrokError("Grok 上传未返回文件标识")
         return file_id
