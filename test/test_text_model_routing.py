@@ -252,6 +252,7 @@ class TextProtocolRoutingTests(unittest.TestCase):
                 "refresh_access_token",
                 return_value="bad",
             ),
+            mock.patch.object(conversation.account_service, "_record_invalid_token_seen", return_value=True),
             mock.patch.object(conversation.account_service, "remove_invalid_token"),
             mock.patch.object(
                 conversation.account_service,

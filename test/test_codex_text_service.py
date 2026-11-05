@@ -250,6 +250,7 @@ class CodexTextProtocolTests(unittest.TestCase):
         with mock.patch.object(CodexTextBackend, "iter_text_deltas", stream), \
                 mock.patch.object(conversation, "conversation_events") as web_stream, \
                 mock.patch.object(conversation.account_service, "refresh_access_token", return_value="bad-token"), \
+                mock.patch.object(conversation.account_service, "_record_invalid_token_seen", return_value=True), \
                 mock.patch.object(conversation.account_service, "remove_invalid_token"), \
                 mock.patch.object(conversation.account_service, "get_text_access_token", return_value="confirmed-codex-token") as selector, \
                 mock.patch.object(conversation.account_service, "mark_text_used") as mark:
@@ -257,6 +258,39 @@ class CodexTextProtocolTests(unittest.TestCase):
         selector.assert_called_once_with(excluded_tokens={"bad-token"}, model="gpt-6-sol", channel="codex")
         mark.assert_called_once_with("confirmed-codex-token")
         web_stream.assert_not_called()
+
+    def _run_invalid_token_retry(self, confirmed: bool):
+        backend = CodexTextBackend("bad-token")
+        request = conversation.ConversationRequest(model="gpt-6-sol", prompt="hi")
+
+        def stream(active, *_args):
+            if active.access_token == "bad-token":
+                raise CodexTextError("The upstream authentication token has been invalidated.", "token_invalidated")
+            yield "ok"
+
+        with mock.patch.object(CodexTextBackend, "iter_text_deltas", stream), \
+                mock.patch.object(conversation.account_service, "refresh_access_token", return_value="bad-token"), \
+                mock.patch.object(conversation.account_service, "_record_invalid_token_seen", return_value=confirmed) as seen, \
+                mock.patch.object(conversation.account_service, "remove_invalid_token") as remove, \
+                mock.patch.object(conversation.account_service, "get_text_access_token", return_value="other-codex-token") as selector, \
+                mock.patch.object(conversation.account_service, "mark_text_used"):
+            result = list(conversation.stream_text_deltas(backend, request))
+        return result, seen, remove, selector
+
+    def test_first_invalid_token_is_deferred_and_account_is_not_removed(self) -> None:
+        result, seen, remove, selector = self._run_invalid_token_retry(confirmed=False)
+        self.assertEqual(result, ["ok"])
+        seen.assert_called_once()
+        self.assertEqual(seen.call_args.args[:2], ("bad-token", "text_stream"))
+        remove.assert_not_called()
+        selector.assert_called_once_with(excluded_tokens={"bad-token"}, model="gpt-6-sol", channel="codex")
+
+    def test_confirmed_invalid_token_in_text_stream_is_still_not_removed(self) -> None:
+        result, seen, remove, selector = self._run_invalid_token_retry(confirmed=True)
+        self.assertEqual(result, ["ok"])
+        seen.assert_called_once()
+        remove.assert_not_called()
+        selector.assert_called_once_with(excluded_tokens={"bad-token"}, model="gpt-6-sol", channel="codex")
 
     def test_failure_after_partial_text_is_not_marked_success_or_resubmitted(self) -> None:
         backend = CodexTextBackend("synthetic-token")

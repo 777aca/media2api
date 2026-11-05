@@ -818,7 +818,9 @@ def stream_text_deltas(backend: OpenAIBackendAPI | CodexTextBackend, request: Co
                 if refreshed_token and refreshed_token != token and refreshed_token not in attempted_tokens:
                     token = refreshed_token
                 else:
-                    account_service.remove_invalid_token(token, "text_stream")
+                    # 对话流里的 401 也可能只是账号无权使用该模型，这里只记录失败并换号，不删号；
+                    # 真正失效的账号交给刷新流程延迟确认后清理。
+                    account_service._record_invalid_token_seen(token, "text_stream", error_message)
                     selection = {"excluded_tokens": set(attempted_tokens), "model": request.model}
                     if codex_channel:
                         selection["channel"] = "codex"
