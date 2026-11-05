@@ -85,6 +85,9 @@ def create_router() -> APIRouter:
     async def model_catalog(authorization: str | None, *, force_refresh: bool = False):
         require_admin(authorization)
         try:
+            if force_refresh:
+                # 管理员点击刷新目录时才读取上游官方目录，发现新发布的图片型号。
+                await run_in_threadpool(openai_v1_models.discover_upstream_image_models, force_refresh=True)
             return await run_in_threadpool(
                 openai_v1_models.get_catalog,
                 force_refresh=force_refresh,

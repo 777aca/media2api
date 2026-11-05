@@ -52,6 +52,30 @@ class WebImage25ModelClassificationTests(unittest.TestCase):
                 self.assertEqual(split_image_model(model), (None, None))
 
 
+class DiscoveredWebImageModelTests(unittest.TestCase):
+    def test_upstream_discovered_models_are_registered_and_invalid_names_rejected(self) -> None:
+        from utils import helper
+        try:
+            found = helper.register_discovered_web_image_models([
+                "gpt-image-2.6-aurora", "GPT-Image-2.6-Dawn", "gpt-image-2.6", "gpt-image-2.5-flare",
+                "plus-gpt-image-2.6-aurora", "gpt-5", None,
+            ])
+            self.assertEqual(found, {"gpt-image-2.6-aurora", "gpt-image-2.6-dawn"})
+            for model in found:
+                with self.subTest(model=model):
+                    self.assertTrue(is_supported_image_model(model))
+                    self.assertTrue(is_web_image_model_25(model))
+                    self.assertEqual(split_image_model(model), (None, model))
+            for model in ("gpt-image-2.6", "plus-gpt-image-2.6-aurora", "gpt-image-2.5"):
+                with self.subTest(model=model):
+                    self.assertFalse(is_supported_image_model(model))
+            self.assertIn("gpt-image-2.5-flare", helper.all_web_image_models())
+            self.assertIn("gpt-image-2.6-aurora", helper.all_web_image_models())
+        finally:
+            helper.register_discovered_web_image_models([])
+        self.assertFalse(is_supported_image_model("gpt-image-2.6-aurora"))
+
+
 class WebImage25Fixture:
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory(prefix="media2api-web-image-tests-")

@@ -90,7 +90,7 @@ class ModelCatalogProtocolTests(unittest.TestCase):
         self.accounts.add_account_items([{"access_token": "web-free", "type": "free", "source_type": "web"}])
         result = openai_v1_models.get_catalog()
         entries = {item["id"]: item for item in result["data"] if item.get("entry_kind") == "web_image"}
-        self.assertEqual(set(entries), {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst"})
+        self.assertEqual(set(entries), {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"})
         self.assertTrue(all(item["source"] == "compatibility" and item["owned_by"] == "media2api"
                             for item in entries.values()))
 
@@ -112,11 +112,11 @@ class ModelCatalogProtocolTests(unittest.TestCase):
 
     def test_multiple_accounts_are_deduplicated_and_reads_immediately_reflect_status_changes(self) -> None:
         self.accounts.add_accounts(["first-account", "second-account"])
-        expected = {"gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"}
+        expected = {"gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"}
         self.assertEqual({item["id"] for item in openai_v1_models.list_models()["data"]}, expected)
         self.accounts.update_account("first-account", {"status": "禁用"}, quiet=True)
         result = openai_v1_models.get_catalog(force_refresh=True)
-        self.assertEqual(len(result["data"]), 3)
+        self.assertEqual(len(result["data"]), 5)
         self.assertEqual(result["sync"]["source_count"], 1)
         self.accounts.delete_accounts(["second-account"])
         self.assertEqual(openai_v1_models.list_models()["data"], [])

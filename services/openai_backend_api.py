@@ -25,7 +25,7 @@ from services.codex_client import codex_headers, get_codex_client_version
 from services.config import config
 from services.proxy_service import proxy_settings
 from services.generation_context import checkpoint
-from utils.helper import WEB_IMAGE_MODELS_25, UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uuid, split_image_model
+from utils.helper import all_web_image_models, UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uuid, split_image_model
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
 from utils.turnstile import solve_turnstile_token
@@ -573,7 +573,7 @@ class OpenAIBackendAPI:
         _, base_model = split_image_model(model)
         if not base_model:
             return "auto", ""
-        if base_model in WEB_IMAGE_MODELS_25:
+        if base_model in all_web_image_models():
             # 网页会话保留完整图片型号，不套用兼容入口的会话模型与思考参数。
             return base_model, ""
         if base_model == "gpt-image-2":

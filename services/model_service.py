@@ -13,7 +13,7 @@ from curl_cffi.requests.exceptions import Timeout
 
 from services.account_service import AccountService, account_service
 from services.openai_backend_api import InvalidModelResponseError, OpenAIBackendAPI
-from utils.helper import UpstreamHTTPError
+from utils.helper import UpstreamHTTPError, register_discovered_web_image_models
 from utils.log import logger
 
 
@@ -230,6 +230,8 @@ class ModelCatalogService:
             self._account_signature = current_signature if same_accounts else signature
             self._expires_at = self._clock() + self._cache_ttl_seconds if same_accounts else 0.0
             self._has_catalog = True
+            # 官方目录刷新成功后登记 gpt-image-N.N-后缀 型号；失败时 union 仍含旧缓存，已登记的型号保持不变。
+            register_discovered_web_image_models(list(self._union()))
 
     def _ensure_catalog(self, *, force_refresh: bool = False) -> None:
         active, signature = self._account_snapshot()

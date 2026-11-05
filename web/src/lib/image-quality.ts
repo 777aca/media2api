@@ -10,6 +10,8 @@ const standardQualityOptions: readonly ImageQualityOption[] = [
   { value: "high", label: "高" },
 ];
 
+const webImageModelPattern = /^gpt-image-\d+(?:\.\d+)+-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 const image25QualityOptions: readonly ImageQualityOption[] = [
   ...standardQualityOptions,
   { value: "xhigh", label: "超高" },
@@ -18,7 +20,8 @@ const image25QualityOptions: readonly ImageQualityOption[] = [
 
 export function getImageQualityOptions(model: string): readonly ImageQualityOption[] {
   if (model.startsWith("grok-")) return [{ value: "auto", label: "自动" }];
-  return model === "gpt-image-2.5-flare" || model === "gpt-image-2.5-sunburst"
+  // 与后端发现规则一致：gpt-image-N.N-后缀 形式的网页图片型号支持扩展档位。
+  return webImageModelPattern.test(model.trim().toLowerCase())
     ? image25QualityOptions
     : standardQualityOptions;
 }

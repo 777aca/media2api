@@ -10,7 +10,7 @@ from PIL import Image
 
 from services.codex_client import codex_headers
 from services.openai_backend_api import OpenAIBackendAPI
-from utils.helper import WEB_IMAGE_MODELS_25
+from utils.helper import all_web_image_models
 
 
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
@@ -93,8 +93,8 @@ def build_codex_image_request(*, model: str, prompt: str, images: list[str] | No
                              mask: str | None = None, size: str | None = None,
                              quality: str = "auto") -> tuple[str, dict[str, object]]:
     model = model.strip()
-    if model not in WEB_IMAGE_MODELS_25:
-        raise CodexImageError("Unsupported image model. Use gpt-image-2.5-flare or gpt-image-2.5-sunburst.",
+    if model not in all_web_image_models():
+        raise CodexImageError("Unsupported image model. Use a model listed in the image model catalog.",
                               status_code=400, code="unsupported_image_model", error_type="invalid_request_error")
     if not prompt.strip():
         raise CodexImageError("prompt is required", status_code=400, code="invalid_prompt", error_type="invalid_request_error")

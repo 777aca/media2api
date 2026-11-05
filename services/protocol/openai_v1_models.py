@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from services.account_service import account_service
-from utils.helper import CODEX_IMAGE_MODEL, WEB_IMAGE_MODELS_25
+from utils.helper import CODEX_IMAGE_MODEL, all_web_image_models, register_discovered_web_image_models
 
 
 def _image_models(*, include_source: bool) -> tuple[list[dict[str, object]], int]:
@@ -24,7 +24,7 @@ def _image_models(*, include_source: bool) -> tuple[list[dict[str, object]], int
 
     if accounts:
         dynamic_models.add("gpt-image-2")
-        dynamic_models.update(WEB_IMAGE_MODELS_25)
+        dynamic_models.update(all_web_image_models())
     if codex_types & {"Plus", "Team", "Pro"}:
         dynamic_models.add(CODEX_IMAGE_MODEL)
     if "Plus" in codex_types:
@@ -46,7 +46,7 @@ def _image_models(*, include_source: bool) -> tuple[list[dict[str, object]], int
         }
         if include_source:
             item["source"] = "compatibility"
-            if model in WEB_IMAGE_MODELS_25:
+            if model in all_web_image_models():
                 item["entry_kind"] = "web_image"
         data.append(item)
     return data, len(accounts)
@@ -65,12 +65,14 @@ def list_all_models(*, force_refresh: bool = False) -> dict[str, object]:
     """Combine the local image entries with the cached per-account text catalog."""
     from services.model_service import model_catalog_service
 
-    images = list_models()["data"]
     try:
         official = model_catalog_service.list_models(force_refresh=force_refresh)["data"]
+        # 从上游官方目录发现 gpt-image-N.N-后缀 形式的网页图片型号，登记后图片目录和调用校验同时生效。
+        register_discovered_web_image_models([item.get("id") for item in official if isinstance(item, dict)])
     except Exception:
         # The image catalog must remain usable when an upstream catalog fails.
         official = []
+    images = list_models()["data"]
     by_id = {item["id"]: item for item in images}
     for item in official:
         if isinstance(item, dict) and isinstance(item.get("id"), str):
@@ -80,6 +82,15 @@ def list_all_models(*, force_refresh: bool = False) -> dict[str, object]:
     for item in catalog(get_store().accounts()):
         by_id[item["id"]] = item
     return {"object": "list", "data": [by_id[key] for key in sorted(by_id)]}
+
+
+def discover_upstream_image_models(*, force_refresh: bool = False) -> None:
+    """读取上游官方目录，刷新成功后由 model_service 登记新发布的图片型号；失败不影响本地目录。"""
+    from services.model_service import model_catalog_service
+    try:
+        model_catalog_service.list_models(force_refresh=force_refresh)
+    except Exception:
+        pass
 
 
 def get_catalog(*, force_refresh: bool = False) -> dict[str, object]:

@@ -14,7 +14,26 @@ from fastapi import HTTPException
 from services.proxy_service import proxy_settings
 from utils.log import logger
 
-WEB_IMAGE_MODELS_25 = {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst"}
+WEB_IMAGE_MODELS_25 = {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"}
+# 从上游官方目录发现的网页图片型号（形如 gpt-image-2.6-xxx），运行时登记，与种子集合共同生效。
+DISCOVERED_WEB_IMAGE_MODELS: set[str] = set()
+WEB_IMAGE_MODEL_PATTERN = re.compile(r"^gpt-image-\d+(?:\.\d+)+-[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def register_discovered_web_image_models(model_ids: object) -> set[str]:
+    """登记上游目录中符合命名规则的网页图片型号，返回当前全部已发现型号。"""
+    found = {
+        str(item).strip().lower()
+        for item in (model_ids or [])
+        if WEB_IMAGE_MODEL_PATTERN.match(str(item).strip().lower())
+    }
+    DISCOVERED_WEB_IMAGE_MODELS.clear()
+    DISCOVERED_WEB_IMAGE_MODELS.update(found - WEB_IMAGE_MODELS_25)
+    return set(DISCOVERED_WEB_IMAGE_MODELS)
+
+
+def all_web_image_models() -> set[str]:
+    return WEB_IMAGE_MODELS_25 | DISCOVERED_WEB_IMAGE_MODELS
 BASE_IMAGE_MODELS = {"gpt-image-2", "codex-gpt-image-2"} | WEB_IMAGE_MODELS_25
 IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
@@ -111,7 +130,7 @@ def split_image_model(model: object) -> tuple[str | None, str | None]:
     normalized = str(model or "").strip().lower()
     if not normalized:
         return None, None
-    if normalized in BASE_IMAGE_MODELS:
+    if normalized in BASE_IMAGE_MODELS or normalized in DISCOVERED_WEB_IMAGE_MODELS:
         return None, normalized
     for plan_type in IMAGE_MODEL_PLAN_TYPES:
         prefix = f"{plan_type}-"
@@ -137,7 +156,7 @@ def is_codex_image_model(model: object) -> bool:
 
 
 def is_web_image_model_25(model: object) -> bool:
-    return str(model or "").strip().lower() in WEB_IMAGE_MODELS_25
+    return str(model or "").strip().lower() in all_web_image_models()
 
 
 def is_image_chat_request(body: dict[str, object]) -> bool:

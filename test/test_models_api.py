@@ -27,6 +27,7 @@ class ModelsApiTests(unittest.TestCase):
         self.list_models = mock.patch.object(ai_module.openai_v1_models, "list_all_models", return_value={
             "object": "list", "data": [{"id": "gpt-image-2.5-flare", "object": "model"}],
         }).start()
+        self.discover = mock.patch.object(ai_module.openai_v1_models, "discover_upstream_image_models").start()
         self.list_image_models = mock.patch.object(ai_module.openai_v1_models, "list_models", return_value={
             "object": "list", "data": [{"id": "gpt-image-2", "object": "model"}],
         }).start()
@@ -41,11 +42,13 @@ class ModelsApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), self.catalog)
         self.get_catalog.assert_called_once_with(force_refresh=False)
+        self.discover.assert_not_called()
         self.get_catalog.reset_mock()
         response = self.client.post("/api/models/sync", headers=headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), self.catalog)
         self.get_catalog.assert_called_once_with(force_refresh=True)
+        self.discover.assert_called_once_with(force_refresh=True)
 
     def test_admin_catalog_endpoints_reject_missing_invalid_and_user_keys(self) -> None:
         for headers, expected in (({}, 401), ({"Authorization": "Bearer invalid-key"}, 401),
