@@ -48,6 +48,8 @@ def execute_image(request, index: int, total: int, row: dict):
             try:
                 if not recovering:
                     checkpoint("account_selected", account_id=account_id, attempt=len(attempted), conversation_id="")
+                from services.diagnostic_context import account_evidence, safe_error
+                account_evidence(account, channel)
                 while True:
                     backend = OpenAIBackendAPI(access_token=token)
                     backend.progress_callback = request.progress_callback
@@ -80,6 +82,7 @@ def execute_image(request, index: int, total: int, row: dict):
                         return outputs
                     except Exception as exc:
                         failure = classify_image_error(exc, int(account.get("image_consecutive_failures") or 0))
+                        checkpoint(error_category=failure.category, error_code=safe_error(exc)["error_code"], outcome="failed")
                         phase = current.phase
                         if getattr(exc, "conversation_id", None):
                             checkpoint("polling", conversation_id=exc.conversation_id)
@@ -98,6 +101,8 @@ def execute_image(request, index: int, total: int, row: dict):
                             replacement = account_service.refresh_access_token(token, force=True, event="model_catalog_sync")
                             if replacement and replacement != token:
                                 token = replacement
+                                checkpoint("account_selected", account_id=account_id)
+                                account_evidence(account, channel)
                                 continue
                         if safe_retry or (phase == "submitting" and failure.category == "transient"):
                             account_service.record_image_failure(token, request.model, channel, failure)

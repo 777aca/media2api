@@ -5,6 +5,7 @@ export { parseModelCatalogResponse } from "@/lib/model-catalog";
 export type { Model, CatalogModel, ModelCatalogSync, ModelCatalogResponse } from "@/lib/model-catalog";
 import { httpRequest, request } from "@/lib/request";
 import { parseImageRetentionHours, parseImageRetentionResponse } from "@/lib/image-retention";
+import { parseLogResponse } from "@/lib/log-diagnostics";
 
 export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
@@ -712,12 +713,13 @@ export async function deleteToTarget(targetFreeMb: number) {
   );
 }
 
-export async function fetchSystemLogs(filters: { type?: string; start_date?: string; end_date?: string }) {
+export type SystemLogFilters = { type?: string; start_date?: string; end_date?: string; status?: string; channel?: string; model?: string; account?: string; task_type?: string; q?: string; page?: number; page_size?: number };
+
+export async function fetchSystemLogs(filters: SystemLogFilters) {
   const params = new URLSearchParams();
-  if (filters.type) params.set("type", filters.type);
-  if (filters.start_date) params.set("start_date", filters.start_date);
-  if (filters.end_date) params.set("end_date", filters.end_date);
-  return httpRequest<{ items: SystemLog[] }>(`/api/logs${params.toString() ? `?${params.toString()}` : ""}`);
+  Object.entries(filters).forEach(([key, value]) => { if (value !== undefined && value !== "") params.set(key, String(value)); });
+  const value = await httpRequest<unknown>(`/api/logs${params.toString() ? `?${params.toString()}` : ""}`);
+  return parseLogResponse(value);
 }
 
 export async function deleteSystemLogs(ids: string[]) {

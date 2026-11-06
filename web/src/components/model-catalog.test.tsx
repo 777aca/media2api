@@ -45,16 +45,16 @@ describe("本地图片模型目录", () => {
     assert.match(text, /gpt-image-2项目入口/);
     assert.match(text, /gpt-image-2.5-flare网页生图/);
     assert.match(text, /gpt-image-2.5-sunburst网页生图/);
-    assert.match(text, /刷新目录仅读取本地账号状态/);
+    assert.match(text, /同步目录仅读取本地账号状态/);
     assert.match(text, /实际账号权限和额度由上游校验/);
     assert.doesNotMatch(text, /官方模型|Codex 目录|同步成功/);
   });
 
-  it("更新结果显示活跃账号数量和本地刷新时间", () => {
+  it("更新结果显示活跃账号数量和本地同步时间", () => {
     const text = renderText(state());
     assert.match(text, /已根据 2 个活跃账号更新图片目录/);
     assert.match(text, /最近更新：/);
-    assert.doesNotMatch(text, /尚未刷新|个来源/);
+    assert.doesNotMatch(text, /尚未同步|个来源/);
   });
 
   it("没有活跃账号时提示导入或启用账号", () => {
@@ -62,13 +62,13 @@ describe("本地图片模型目录", () => {
       ...catalog().sync, source_count: 0, successful_sources: 0,
     } }) }));
     assert.match(text, /当前暂无可用图片模型，请先导入或启用账号/);
-    assert.doesNotMatch(text, /刷新失败/);
+    assert.doesNotMatch(text, /同步失败/);
   });
 
   it("首次请求失败显示原因，不误报为账号为空", () => {
     const text = renderText(state({ catalog: null, error: "图片目录服务暂时无法连接" }));
     assert.match(text, /图片目录服务暂时无法连接/);
-    assert.match(text, /最近更新：尚未刷新/);
+    assert.match(text, /最近更新：尚未同步/);
     assert.doesNotMatch(text, /导入或启用账号|已根据/);
   });
 
@@ -86,7 +86,7 @@ describe("本地图片模型目录", () => {
     const text = renderText(state({ catalog: catalog({ sync: {
       ...catalog().sync, status: "failed", last_success_at: null, successful_sources: 0,
     } }) }));
-    assert.match(text, /图片目录刷新失败，显示最近成功的目录/);
+    assert.match(text, /图片目录同步失败，显示最近成功的目录/);
     assert.match(text, /gpt-image-2.5-flare/);
   });
 
@@ -97,10 +97,10 @@ describe("本地图片模型目录", () => {
     assert.doesNotMatch(text, /已根据/);
   });
 
-  it("首次加载和手动刷新期间禁用刷新按钮", () => {
+  it("首次加载和手动同步期间禁用同步按钮", () => {
     for (const syncing of [false, true]) {
       const html = renderToStaticMarkup(<ModelCatalog state={state({ catalog: null, loading: true, syncing })} />);
-      const label = syncing ? "正在刷新" : "刷新目录";
+      const label = syncing ? "正在同步" : "同步目录";
       const refreshButton = [...html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)]
         .find((match) => match[2].includes(label));
       assert.ok(refreshButton, "应显示" + label + "按钮");

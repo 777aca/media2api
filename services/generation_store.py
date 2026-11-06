@@ -16,7 +16,7 @@ ACTIVE = {"queued", "running", "uncertain"}
 _TASK_METADATA = ",".join(f"t.{column}" for column in (
     "id", "job_id", "ordinal", "owner", "status", "phase", "created", "started", "finished", "updated",
     "account_id", "conversation_id", "attempt", "recovery", "error_category", "error_code", "error",
-    "http_status", "reservation", "attempted_accounts", "recovery_attempts", "recovery_started",
+    "diagnostics", "http_status", "reservation", "attempted_accounts", "recovery_attempts", "recovery_started",
     "recovery_deadline", "recovery_next_at",
 ))
 
@@ -80,6 +80,13 @@ class GenerationStore:
                                  "recovery_deadline": "REAL", "recovery_next_at": "REAL"}.items():
             if name not in columns:
                 self.db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+
+        if "diagnostics" not in columns:
+            self.db.execute("ALTER TABLE tasks ADD COLUMN diagnostics TEXT")
+        event_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
+        for name in ("account_id", "account_email", "error_code", "diagnostics"):
+            if name not in event_columns:
+                self.db.execute(f"ALTER TABLE events ADD COLUMN {name} TEXT")
 
     @contextmanager
     def transaction(self):
@@ -198,27 +205,37 @@ class GenerationStore:
     def checkpoint(self, task_id: str, phase: str | None = None, **values) -> None:
         allowed = {"account_id", "conversation_id", "attempt", "attempted_accounts", "recovery", "error_category", "error_code", "error", "http_status"}
         changes = {key: value for key, value in values.items() if key in allowed}
+        if isinstance(values.get("diagnostics"), dict):
+            changes["diagnostics"] = dump(values["diagnostics"])
         if phase:
             changes["phase"] = phase
         changes["updated"] = time.time()
         with self.transaction() as db:
-            row = db.execute("SELECT status,phase,attempt FROM tasks WHERE id=?", (task_id,)).fetchone()
+            row = db.execute("SELECT status,phase,attempt,account_id,diagnostics FROM tasks WHERE id=?", (task_id,)).fetchone()
             if not row or row["status"] in TERMINAL:
                 raise GenerationRuntimeError("任务已经结束", "image_task_ended", 409)
             db.execute("UPDATE tasks SET " + ",".join(f"{key}=?" for key in changes) + " WHERE id=?", (*changes.values(), task_id))
-            db.execute("INSERT INTO events(task_id,phase,category,attempt,outcome,created) VALUES (?,?,?,?,?,?)",
-                       (task_id, phase or row["phase"], values.get("error_category"), values.get("attempt", row["attempt"]), values.get("outcome"), time.time()))
+            diagnostics = values.get("diagnostics") if isinstance(values.get("diagnostics"), dict) else json.loads(row["diagnostics"] or "{}")
+            event_attempt = diagnostics.get("_attempt_number", values.get("attempt", row["attempt"]))
+            event = values.get("diagnostic_event") or {}
+            db.execute("INSERT INTO events(task_id,phase,category,attempt,outcome,created,account_id,account_email,error_code,diagnostics) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                       (task_id, phase or row["phase"], values.get("error_category"), event_attempt, values.get("outcome"), time.time(),
+                        values.get("account_id") or values.get("diagnostic_account_id") or row["account_id"],
+                        event.get("account_email"), values.get("error_code"), dump(event) if event else None))
 
     def finish(self, task_id: str, *, status: str, output: list | None = None, category: str = "", code: str = "", error: str = "", http_status: int = 502, recovery_status: str | None = None) -> list:
         """The terminal state, reservation release and charge are one transaction."""
         now = time.time()
         with self.transaction() as db:
             task = db.execute("SELECT t.*,j.identity FROM tasks t JOIN jobs j ON j.id=t.job_id WHERE t.id=?", (task_id,)).fetchone()
+            event_attempt = json.loads(task["diagnostics"] or "{}").get("_attempt_number", task["attempt"])
             if task["status"] in TERMINAL:
                 return json.loads(task["output"] or "[]")
             if status == "uncertain":
                 db.execute("UPDATE tasks SET status='uncertain',recovery='auto_pending',recovery_next_at=NULL,error_category=?,error_code=?,error=?,http_status=?,updated=? WHERE id=?",
                            (category, code or "image_result_uncertain", error, http_status, now, task_id))
+                db.execute("INSERT INTO events(task_id,phase,category,attempt,outcome,created,account_id,error_code) VALUES (?,?,?,?,?,?,?,?)",
+                           (task_id, task["phase"], category, event_attempt, status, now, task["account_id"], code or "image_result_uncertain"))
                 return []
             outputs = output or []
             count = sum(len(item.get("data", [])) for item in outputs if item.get("kind") == "result")
@@ -244,13 +261,21 @@ class GenerationStore:
             db.execute("UPDATE tasks SET status=?,phase=?,finished=?,updated=?,output=?,reservation=0,error_category=?,error_code=?,error=?,http_status=?,recovery_next_at=NULL,recovery=COALESCE(?,CASE WHEN recovery='' THEN '' ELSE 'completed' END) WHERE id=?",
                        (status, status, now, now, dump(outputs), category, code, error, http_status, recovery_status, task_id))
             self.save_output_metadata(task_id, outputs)
-            db.execute("INSERT INTO events(task_id,phase,category,attempt,outcome,created) VALUES (?,?,?,?,?,?)",
-                       (task_id, task["phase"], category, task["attempt"], status, now))
+            db.execute("INSERT INTO events(task_id,phase,category,attempt,outcome,created,account_id,error_code) VALUES (?,?,?,?,?,?,?,?)",
+                       (task_id, task["phase"], category, event_attempt, status, now, task["account_id"], code))
         return outputs
 
     def claim(self, task_id: str, *, account_id: str | None = None, attempt: int | None = None) -> bool:
-        with self.lock:
-            cursor = self.db.execute("UPDATE tasks SET status='running',phase=CASE WHEN recovery='recovering_result' THEN phase WHEN ? IS NOT NULL THEN 'account_selected' ELSE 'preparing' END,account_id=COALESCE(?,account_id),attempt=COALESCE(?,attempt),recovery_attempts=recovery_attempts+CASE WHEN recovery='recovering_result' THEN 1 ELSE 0 END,recovery_next_at=NULL,started=COALESCE(started,?),updated=? WHERE id=? AND status='queued'", (account_id, account_id, attempt, time.time(), time.time(), task_id))
+        from services.diagnostic_context import new_attempt_diagnostics
+        with self.transaction() as db:
+            row = db.execute("SELECT status,recovery,phase,attempt,diagnostics FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if not row or row["status"] != "queued":
+                return False
+            diagnostics = row["diagnostics"]
+            if row["recovery"] != "recovering_result" and row["phase"] not in {"raw_saved", "output_saved"}:
+                diagnostics = dump(new_attempt_diagnostics(json.loads(diagnostics or "{}"), account_id,
+                    attempt if attempt is not None else row["attempt"], pending=True))
+            cursor = db.execute("UPDATE tasks SET status='running',phase=CASE WHEN recovery='recovering_result' THEN phase WHEN ? IS NOT NULL THEN 'account_selected' ELSE 'preparing' END,account_id=COALESCE(?,account_id),attempt=COALESCE(?,attempt),diagnostics=?,recovery_attempts=recovery_attempts+CASE WHEN recovery='recovering_result' THEN 1 ELSE 0 END,recovery_next_at=NULL,started=COALESCE(started,?),updated=? WHERE id=? AND status='queued'", (account_id, account_id, attempt, diagnostics, time.time(), time.time(), task_id))
             return cursor.rowcount == 1
 
     def requeue_attempt(self, task_id: str) -> None:

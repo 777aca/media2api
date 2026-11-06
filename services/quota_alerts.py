@@ -60,20 +60,20 @@ def _expired(value: object, now: float) -> bool:
 
 
 def collect_low_quotas(accounts: list[dict], grok_accounts: list[dict], threshold: int, now: float) -> list[dict]:
-    entries = []
+    groups = {}
 
-    def add(provider, account_id, email, dimension, remaining, label, unit="次"):
-        if not account_id or not _number(remaining) or remaining > threshold:
+    def add(provider, account_id, dimension, remaining, label, total=None):
+        if not account_id or not _number(remaining):
             return
-        stable_id = hashlib.sha256(f"{provider}:{account_id}".encode()).hexdigest()
-        masked = ""
-        if isinstance(email, str) and email.count("@") == 1:
-            local, domain = email.split("@")
-            if local and domain and len(domain) <= 80 and "\n" not in email:
-                masked = f"{local[0]}***@{domain} "
-        entries.append({"key": f"{stable_id}:{dimension}", "dimension": dimension,
-                        "label": f"{provider} · {masked}#{stable_id[:8]} · {label}",
-                        "remaining": remaining, "unit": unit, "level": "empty" if remaining == 0 else "low"})
+        key = f"pool-v2:{provider}:{dimension}"
+        group = groups.setdefault(key, {"key": key, "dimension": dimension, "label": f"{provider} · {label}号池",
+            "remaining": 0, "total": 0, "members": set(), "unit": "%" if total is not None else "次"})
+        if account_id in group["members"]:
+            return
+        group["members"].add(account_id)
+        group["remaining"] += remaining
+        if total is not None:
+            group["total"] += total
 
     for account in accounts:
         if account.get("status") not in {"正常", "限流"}:
@@ -83,7 +83,7 @@ def collect_low_quotas(accounts: list[dict], grok_accounts: list[dict], threshol
         known = isinstance(limits, list) and any(isinstance(item, dict) and item.get("feature_name") == "image_gen"
             and _number(item.get("remaining")) for item in limits)
         if known and not _expired(account.get("restore_at"), now):
-            add("ChatGPT", account.get("pool_account_id"), account.get("email"), "image_gen", account.get("quota"), "图片")
+            add("ChatGPT", account.get("pool_account_id"), "image_gen", account.get("quota"), "图片")
     labels = {"fast": "快速", "auto": "自动", "expert": "专家", "heavy": "Heavy",
               "image_pro": "图片", "image_edit": "图片编辑", "video": "视频", "video720p": "720p 视频", "weekly": "周额度"}
     for account in grok_accounts:
@@ -97,23 +97,30 @@ def collect_low_quotas(accounts: list[dict], grok_accounts: list[dict], threshol
             if not isinstance(quota, dict) or _expired(quota.get("reset_at"), now):
                 continue
             remaining = quota.get("remaining")
-            unit = "次"
+            total = None
             if dimension == "weekly":
                 total = quota.get("total")
                 if not _number(remaining) or not _number(total) or total <= 0:
                     continue
-                remaining, unit = round(100 * remaining / total, 2), "%"
-            add("Grok", account.get("id"), account.get("email"), dimension, remaining, label, unit)
+            add("Grok", account.get("id"), dimension, remaining, label, total)
+    entries = []
+    for group in groups.values():
+        remaining = 100 * group["remaining"] / group["total"] if group["unit"] == "%" else group["remaining"]
+        # Compare only after summing every eligible account, including healthy ones.
+        if remaining <= threshold:
+            entries.append({"key": group["key"], "dimension": group["dimension"], "label": group["label"],
+                "remaining": remaining, "unit": group["unit"], "account_count": len(group["members"]),
+                "level": "empty" if group["remaining"] == 0 else "low"})
     return entries
 
 
 def _message(entries: list[dict], now: float) -> str:
     when = datetime.fromtimestamp(now, timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S UTC+8")
-    lines = ["media2api 账号配额提醒", when]
+    lines = ["media2api 号池总配额提醒", when]
     for item in entries:
-        state = "已耗尽" if item["level"] == "empty" else "配额不足"
-        lines.append(f"{item['label']}：{state}，剩余 {item['remaining']:g}{item['unit']}")
-    lines.append("数据来自本地最新配额快照，请在号池管理中查看或刷新。")
+        state = "已知额度已耗尽" if item["level"] == "empty" else "配额不足"
+        lines.append(f"{item['label']}：{state}，已知总剩余 {item['remaining']:g}{item['unit']}（汇总 {item['account_count']} 个账号）")
+    lines.append("同类额度跨账号汇总；未知或过期配额未计入。数据来自本地最新快照，请在号池管理中查看或刷新。")
     return "\n".join(lines)
 
 

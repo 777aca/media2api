@@ -792,7 +792,8 @@ export function AccountImportDialog({ disabled, onImported, grokBusy, grokError,
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <Button
-          className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800"
+          variant="outline"
+          className="h-10 gap-2 rounded-xl border-border bg-card px-4 text-foreground shadow-none hover:bg-accent hover:text-accent-foreground"
           onClick={() => { resetState(); setOpen(true); }}
           disabled={disabled}
         >

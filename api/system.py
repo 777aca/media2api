@@ -123,7 +123,7 @@ def create_router(app_version: str) -> APIRouter:
         require_admin(authorization)
         try:
             settings = quota_alert_settings(body.model_dump(mode="python"), config.get_quota_alert_settings())
-            await run_in_threadpool(send_feishu, settings, "media2api 账号配额提醒：测试推送成功。此消息不代表账号配额不足。")
+            await run_in_threadpool(send_feishu, settings, "media2api 号池总配额提醒：测试推送成功。此消息不代表号池总配额不足。")
         except ValueError as exc:
             raise HTTPException(400, detail={"error": str(exc)}) from exc
         except QuotaAlertError as exc:
@@ -164,9 +164,17 @@ def create_router(app_version: str) -> APIRouter:
         return get_image_download_response(image_path)
 
     @router.get("/api/logs")
-    async def get_logs(type: str = "", start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):
+    async def get_logs(type: str = "", start_date: str = "", end_date: str = "",
+                       status: str = "", channel: str = "", model: str = "", account: str = "",
+                       task_type: str = "", q: str = "", page: int = Query(default=1, ge=1),
+                       page_size: int = Query(default=20, ge=1, le=100),
+                       authorization: str | None = Header(default=None)):
         require_admin(authorization)
-        return {"items": log_service.list(type=type.strip(), start_date=start_date.strip(), end_date=end_date.strip())}
+        return await run_in_threadpool(
+            log_service.query, type=type.strip(), start_date=start_date.strip(), end_date=end_date.strip(),
+            status=status.strip(), channel=channel.strip(), model=model.strip(), account=account.strip(),
+            task_type=task_type.strip(), q=q.strip(), page=page, page_size=page_size,
+        )
 
     @router.post("/api/logs/delete")
     async def delete_logs(body: LogDeleteRequest, authorization: str | None = Header(default=None)):

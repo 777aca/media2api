@@ -41,11 +41,35 @@ class QuotaAlertTests(unittest.TestCase):
     def test_only_known_active_quotas_alert_and_threshold_is_inclusive(self):
         items = collect_low_quotas([account(), account(pool_account_id="unknown", limits_progress=[]),
             account(pool_account_id="disabled", status="禁用"), account(pool_account_id="error", status="异常"),
-            account(4, pool_account_id="ok"), account(-1, pool_account_id="negative")], [], 2, 1000)
+            account(-1, pool_account_id="negative")], [], 2, 1000)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["remaining"], 2)
         self.assertEqual(collect_low_quotas([account()], [], 0, 1000), [])
         self.assertEqual(collect_low_quotas([account(0)], [], 0, 1000)[0]["level"], "empty")
+
+    def test_threshold_compares_pool_total_including_healthy_accounts(self):
+        accounts = [account(2, pool_account_id="one"), account(2, pool_account_id="two")]
+        self.assertEqual(collect_low_quotas(accounts, [], 3, 1000), [])
+        accounts[1]["quota"] = 1
+        items = collect_low_quotas(accounts, [], 3, 1000)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["remaining"], 3)
+        self.assertEqual(items[0]["account_count"], 2)
+        accounts[1]["quota"] = 100
+        self.assertEqual(collect_low_quotas(accounts, [], 3, 1000), [])
+        self.assertEqual(collect_low_quotas([], [], 3, 1000), [])
+
+    def test_grok_aggregates_each_dimension_and_weekly_ratio_separately(self):
+        first = {"id": "one", "status": "active", "enabled": True, "quotas": {
+            "fast": {"remaining": 2}, "image_pro": {"remaining": 1},
+            "weekly": {"remaining": 1, "total": 10}}}
+        second = {"id": "two", "status": "active", "enabled": True, "quotas": {
+            "fast": {"remaining": 2}, "image_pro": {"remaining": 1},
+            "weekly": {"remaining": 0, "total": 90}}}
+        items = collect_low_quotas([account(3)], [first, second], 3, 1000)
+        self.assertEqual({item["dimension"] for item in items}, {"image_gen", "image_pro", "weekly"})
+        self.assertEqual(next(item for item in items if item["dimension"] == "image_pro")["remaining"], 2)
+        self.assertEqual(next(item for item in items if item["dimension"] == "weekly")["remaining"], 1)
 
     def test_grok_ignores_unknown_expired_disabled_and_uses_percent_for_weekly(self):
         grok = {"id": "grok-id", "status": "active", "enabled": True, "tier": "super",
@@ -116,26 +140,28 @@ class QuotaAlertTests(unittest.TestCase):
             worker.check_once(now=10000)
             self.assertEqual(sender.call_count, 5)
 
-    def test_batches_do_not_drop_accounts_and_no_credentials_in_state(self):
+    def test_many_accounts_send_one_total_and_no_credentials_in_state(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
-            settings = quota_alert_settings({"enabled": True, "webhook_url": WEBHOOK, "secret": "private-secret"})
+            settings = quota_alert_settings({"enabled": True, "webhook_url": WEBHOOK, "secret": "private-secret", "threshold": 100})
             accounts = [account(pool_account_id=f"id-{index}", access_token="private-token") for index in range(35)]
             sender = mock.Mock()
             worker = QuotaAlertService(settings=lambda: settings, accounts=lambda: accounts,
                 grok_accounts=lambda: [], state_path=path, sender=sender)
             worker.check_once(now=1000)
-            self.assertEqual(sender.call_args.args[1].count("配额不足"), 30)
+            self.assertEqual(sender.call_args.args[1].count("配额不足"), 1)
+            self.assertIn("总剩余 70次", sender.call_args.args[1])
+            self.assertIn("35 个账号", sender.call_args.args[1])
             worker.check_once(now=1030)
-            self.assertEqual(sender.call_args.args[1].count("配额不足"), 5)
+            self.assertEqual(sender.call_count, 1)
             worker.check_once(now=1060)
-            self.assertEqual(sender.call_count, 2)
+            self.assertEqual(sender.call_count, 1)
             stored = path.read_text()
             for forbidden in ("private-", "person@", "synthetic-hook", "id-0"):
                 self.assertNotIn(forbidden, stored)
             settings["webhook_url"] = WEBHOOK + "-changed"
             worker.check_once(now=1090)
-            self.assertEqual(sender.call_count, 3)
+            self.assertEqual(sender.call_count, 2)
 
     def test_new_alerts_are_not_starved_by_repeat_batches(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -144,9 +170,31 @@ class QuotaAlertTests(unittest.TestCase):
             sender = mock.Mock()
             worker = QuotaAlertService(settings=lambda: settings, accounts=lambda: accounts,
                 grok_accounts=lambda: [], state_path=Path(directory) / "state.json", sender=sender)
-            for index in range(31):
-                worker.check_once(now=1000 + 30 * index)
+            entries = [{"key": f"group-{index}", "label": "Synthetic pool", "level": "low", "remaining": 2,
+                        "unit": "次", "account_count": 1} for index in range(901)]
+            with mock.patch("services.quota_alerts.collect_low_quotas", return_value=entries):
+                for index in range(31):
+                    worker.check_once(now=1000 + 30 * index)
             self.assertEqual(len(worker.sent), 901)
+
+    def test_pool_dedup_survives_account_replacement_and_legacy_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            import json
+            settings = quota_alert_settings({"enabled": True, "webhook_url": WEBHOOK})
+            path = Path(directory) / "state.json"
+            path.write_text(json.dumps({"destination": hashlib.sha256(f"{WEBHOOK}\n".encode()).hexdigest(),
+                "sent": {"old-account:image_gen": {"level": "low", "at": 990}}}), encoding="utf-8")
+            accounts = [account(1, pool_account_id="first"), account(1, pool_account_id="second")]
+            sender = mock.Mock()
+            worker = QuotaAlertService(settings=lambda: settings, accounts=lambda: accounts,
+                grok_accounts=lambda: [], state_path=path, sender=sender)
+            worker.check_once(now=1000)
+            self.assertEqual(sender.call_count, 1)
+            accounts[0]["pool_account_id"] = "replacement"
+            worker.check_once(now=1030)
+            self.assertEqual(sender.call_count, 1)
+            self.assertEqual(len(worker.sent), 1)
+            self.assertNotIn("old-account", path.read_text())
 
     def test_partial_recovery_rearms_exhaustion_before_repeat_interval(self):
         with tempfile.TemporaryDirectory() as directory:

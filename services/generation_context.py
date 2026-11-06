@@ -31,6 +31,17 @@ class ExecutionCheckpoint:
     details: dict = field(default_factory=dict)
 
     def update(self, phase: str | None = None, **values) -> None:
+        if phase == "account_selected":
+            from services.diagnostic_context import new_attempt_diagnostics
+            previous = self.details.get("diagnostics", {})
+            account_id = values.get("account_id", self.account_id)
+            if previous.get("_attempt_pending"):
+                diagnostics = {**previous, "_attempt_pending": False, "account_id": account_id or None}
+            else:
+                diagnostics = new_attempt_diagnostics(previous, account_id, values.get("attempt", self.attempt))
+            values["diagnostics"] = diagnostics
+        if "attempt" in values:
+            self.attempt = values["attempt"]
         if phase:
             self.phase = phase
         if "conversation_id" in values:

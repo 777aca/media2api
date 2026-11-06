@@ -229,6 +229,8 @@ class CodexTextBackend:
         try:
             if self._backend is None:
                 self._backend = OpenAIBackendAPI(access_token=self.access_token)
+            from services.diagnostic_context import upstream_request
+            upstream_request(payload["model"], "codex", self._backend.account)
             response = self._backend.session.post(
                 self._backend.base_url + "/backend-api/codex/responses",
                 json=payload,

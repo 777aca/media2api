@@ -24,6 +24,7 @@ from services.account_service import account_service
 from services.codex_client import codex_headers, get_codex_client_version
 from services.config import config
 from services.proxy_service import proxy_settings
+from services.diagnostic_context import upstream_request, trace_upload, upload_stage
 from services.generation_context import checkpoint
 from utils.helper import all_web_image_models, UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uuid, split_image_model
 from utils.log import logger
@@ -366,6 +367,8 @@ class OpenAIBackendAPI:
             "type": plan_type,
             "quota": quota,
             "limits_progress": limits_progress,
+            "quota_updated_at": time.time() if any(isinstance(limit, dict) and limit.get("feature_name") == "image_gen"
+                and type(limit.get("remaining")) in (int, float) for limit in limits_progress) else None,
             "default_model_slug": init_payload.get("default_model_slug"),
             "restore_at": restore_at,
             "status": "限流" if quota == 0 else "正常",
@@ -857,6 +860,7 @@ class OpenAIBackendAPI:
             },
         })
         checkpoint("submitting")
+        upstream_request(payload["model"], "codex", getattr(self, "account", None), tool_model=tool.get("model"))
         try:
             with urllib.request.urlopen(request, timeout=1200) as raw:
                 yield from self._iter_codex_response_events(raw)
@@ -929,9 +933,11 @@ class OpenAIBackendAPI:
         payload = image.split(",", 1)[1] if image.startswith("data:") and "," in image else image
         return base64.b64decode(payload)
 
+    @trace_upload
     def _upload_image(self, image: str, file_name: str = "image.png") -> Dict[str, Any]:
         """上传一张 base64 图片，返回底层文件元数据。"""
         data = self._decode_image_base64(image)
+        upload_stage("create_file", data)
         if (
                 image
                 and len(image) < 512
@@ -955,6 +961,7 @@ class OpenAIBackendAPI:
         )
         ensure_ok(response, path)
         upload_meta = response.json()
+        upload_stage("upload_bytes")
         response = self.session.put(
             upload_meta["upload_url"],
             headers={
@@ -971,6 +978,7 @@ class OpenAIBackendAPI:
             timeout=120,
         )
         ensure_ok(response, "image_upload")
+        upload_stage("confirm_upload")
         path = f"/backend-api/files/{upload_meta['file_id']}/uploaded"
         response = self.session.post(
             self.base_url + path,
@@ -1055,6 +1063,7 @@ class OpenAIBackendAPI:
             payload["thinking_effort"] = thinking_effort
         path = "/backend-api/f/conversation"
         checkpoint("submitting")
+        upstream_request(payload["model"], "web", getattr(self, "account", None), input_count=len(references))
         response = self.session.post(
             self.base_url + path,
             headers=self._image_headers(path, requirements, conduit_token, "text/event-stream"),
@@ -2594,6 +2603,7 @@ class OpenAIBackendAPI:
         requirements = self._get_chat_requirements()
         path, timezone = self._chat_target()
         payload = self._conversation_payload(normalized, model, timezone, thinking_effort=thinking_effort)
+        upstream_request(payload["model"], "web", getattr(self, "account", None))
         response = self.session.post(
             self.base_url + path,
             headers=self._conversation_headers(path, requirements),

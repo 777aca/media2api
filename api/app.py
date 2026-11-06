@@ -70,7 +70,7 @@ def create_app() -> FastAPI:
     @app.api_route("/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     async def serve_web(full_path: str):
         clean_path = full_path.strip("/")
-        if clean_path.split("/", 1)[0] in {"api", "grok", "v1"}:
+        if clean_path.split("/", 1)[0] in {"api", "grok", "v1", "debug"}:
             raise HTTPException(status_code=404, detail="Not Found")
         asset = resolve_web_asset(full_path)
         if asset is not None:

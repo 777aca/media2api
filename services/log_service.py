@@ -87,6 +87,9 @@ class LogService:
                 key: _display_log_time(value) if key in {"started_at", "ended_at"} else value
                 for key, value in detail.items()
             }
+            quota = displayed["detail"].get("quota_snapshot")
+            if isinstance(quota, dict) and quota.get("scope") == "api_key_image":
+                displayed["detail"]["quota_snapshot"] = None
         return displayed
 
     @staticmethod
@@ -102,6 +105,9 @@ class LogService:
         return True
 
     def add(self, type: str, summary: str = "", detail: dict[str, Any] | None = None, **data: Any) -> None:
+        if type == LOG_TYPE_CALL:
+            from services.log_diagnostics import normalize_call_detail
+            detail = normalize_call_detail(detail or data)
         item = {
             "id": uuid4().hex,
             "time": log_timestamp(),
@@ -130,6 +136,20 @@ class LogService:
             if len(items) >= limit:
                 break
         return items
+
+    def query(self, *, type: str = "", start_date: str = "", end_date: str = "",
+              status: str = "", channel: str = "", model: str = "", account: str = "",
+              task_type: str = "", q: str = "", page: int = 1, page_size: int = 20) -> dict:
+        """Collapse historical rows and filter the entire log before pagination."""
+        from services.log_diagnostics import matches_diagnostics
+        if page < 1 or not 1 <= page_size <= 100:
+            raise ValueError("page must be >= 1 and page_size must be 1..100")
+        items = [item for item in self.list(type, start_date, end_date, limit=float("inf"))
+                 if matches_diagnostics(item, status=status, channel=channel, model=model,
+                                        account=account, task_type=task_type, q=q)]
+        offset = (page - 1) * page_size
+        return {"items": items[offset:offset + page_size], "total": len(items),
+                "page": page, "page_size": page_size}
 
     def delete(self, ids: list[str]) -> dict[str, int]:
         target_ids = {str(item or "").strip() for item in ids if str(item or "").strip()}
@@ -287,6 +307,11 @@ class LoggedCall:
     idempotency_key: str = ""
     image_task_id: str = ""
 
+    _diagnostics: dict = field(default_factory=dict, init=False)
+    request_id: str = field(default_factory=lambda: uuid4().hex)
+    first_token_ms: int | None = field(default=None, init=False)
+    _clock_started: float = field(default_factory=time.monotonic, init=False)
+
     def __post_init__(self) -> None:
         if self.request_params is not None:
             self.request_params = sanitize_request_parameters(self.request_params)
@@ -308,7 +333,8 @@ class LoggedCall:
                 await run_in_threadpool(prepare_image_call, handler, args[0], context)
                 self.image_task_id = context.task_id
                 args = ({**args[0], "_image_context": context}, *args[1:])
-            result = await run_in_threadpool(handler, *args)
+            from services.diagnostic_context import invoke
+            result = await run_in_threadpool(invoke, self._diagnostics, handler, *args)
         except ImageGenerationError as exc:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""),
                      conversation_id=getattr(exc, "conversation_id", ""), error_code=exc.code,
@@ -325,13 +351,12 @@ class LoggedCall:
 
         if isinstance(result, dict):
             self.log("调用完成", result)
-            response = dict(result)
-            response.pop("_account_email", None)
+            response = _strip_internal_response_fields(result)
             return JSONResponse(content=response, headers={"X-Image-Task-Id": context.task_id}) if context else response
 
         sender = anthropic_sse_stream if sse == "anthropic" else sse_json_stream
         try:
-            has_first, first = await run_in_threadpool(_next_item, result)
+            has_first, first = await run_in_threadpool(invoke, self._diagnostics, _next_item, result)
         except ImageGenerationError as exc:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""),
                      conversation_id=getattr(exc, "conversation_id", ""), error_code=exc.code,
@@ -369,6 +394,9 @@ class LoggedCall:
         return StreamingResponse(encoded, media_type="text/event-stream", headers={"X-Image-Task-Id": context.task_id} if context else None)
 
     def stream(self, items):
+        from services.diagnostic_context import iterate
+        from services.log_diagnostics import has_text_delta
+
         urls: list[str] = []
         account_emails: list[str] = []
         conversation_ids: list[str] = []
@@ -376,7 +404,9 @@ class LoggedCall:
         response_id = ""
         usage = None
         try:
-            for item in items:
+            for item in iterate(self._diagnostics, items):
+                if self.first_token_ms is None and has_text_delta(item):
+                    self.first_token_ms = max(0, int((time.monotonic() - self._clock_started) * 1000))
                 if isinstance(item, dict):
                     current_usage = item.get("usage") or (item.get("response", {}).get("usage") if isinstance(item.get("response"), dict) else None)
                     if isinstance(current_usage, dict):
@@ -393,6 +423,7 @@ class LoggedCall:
                 "流式调用失败",
                 status="failed",
                 error=str(exc),
+                result={"usage": usage},
                 urls=urls,
                 account_email=(account_emails[0] if account_emails else getattr(exc, "account_email", "")),
                 conversation_id=(conversation_ids[0] if conversation_ids else getattr(exc, "conversation_id", "")),
@@ -427,6 +458,9 @@ class LoggedCall:
             "duration_ms": int((time.time() - self.started) * 1000),
             "status": status,
         }
+        from services.log_diagnostics import call_diagnostics
+        detail.update(call_diagnostics(self, result))
+        detail.update(self._diagnostics)
         from services.providers.grok_catalog import is_grok
         if is_grok(self.model):
             detail["channel"] = "grok_web"

@@ -178,6 +178,8 @@ def generate_codex_image(backend: OpenAIBackendAPI, *, model: str, prompt: str,
         raise CodexImageError("An authenticated account is required for this image model.", code="model_unavailable")
     response = None
     try:
+        from services.diagnostic_context import upstream_request
+        upstream_request(payload["model"], "codex", backend.account, input_count=len(payload.get("images") or []))
         response = backend.session.post(
             backend.base_url + path, json=payload,
             headers=codex_headers(backend.access_token, backend.account), timeout=(30, 1200),

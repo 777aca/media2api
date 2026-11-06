@@ -39,7 +39,7 @@ export function useModelCatalog(kind: "image" | "text" = "image") {
         } catch (cause: unknown) {
           if (mounted.current) {
             // 网络或契约错误保留最近目录；后端有效响应则始终采用其账号状态过滤结果。
-            setError(cause instanceof Error ? cause.message : "加载模型目录失败，请稍后重新刷新");
+            setError(cause instanceof Error ? cause.message : "加载模型目录失败，请稍后重新同步");
           }
         }
         shouldForce = forceNext.current;

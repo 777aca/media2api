@@ -115,6 +115,9 @@ class _MetaParser(HTMLParser):
             self.value = a.get("content", "")
 
 
+from services.diagnostic_context import upstream_request, trace_upload, upload_stage, account_evidence
+
+
 class GrokWeb:
     def __init__(self, account: dict, *, session=None, origin=ORIGIN):
         self.account = account
@@ -257,7 +260,9 @@ class GrokWeb:
         return get_store().update_account(self.account["id"], {**identity, "quotas": quotas,
             "tier": tier, "last_synced": time.time(), "status": "active", "cooldown_until": 0})
 
+    @trace_upload
     def upload(self, data_uri, *, edit=False):
+        account_evidence(self.account, "grok_web")
         if not isinstance(data_uri, str):
             raise HTTPException(400, "图片输入必须是 data URL")
         encoded = data_uri.partition(",")[2] if data_uri.startswith("data:") else data_uri
@@ -272,12 +277,14 @@ class GrokWeb:
                 raise ValueError()
         except Exception as exc:
             raise HTTPException(400, "图片必须是有效的 PNG/JPEG/WebP/GIF，最大 32 MiB") from exc
+        upload_stage("upload_bytes", raw)
         with closing(CurlMime()) as multipart:
             multipart.addpart(name="file", content_type=mime, filename="image." + mime.split("/")[1], data=raw)
             if edit:
                 multipart.addpart(name="file_source", data="IMAGINE_SELF_UPLOAD_FILE_SOURCE")
             with closing(self.request("POST", "/http/upload-file-v2/direct", multipart=multipart, timeout=60)) as r:
                 value = r.json()
+        upload_stage("confirm_upload")
         if value.get("terminalError"):
             raise GrokError("Grok 拒绝了上传图片", 400)
         metadata = value.get("fileMetadata") or {}
@@ -325,6 +332,7 @@ class GrokWeb:
             event["session_id"] = sid
         created = attached = sent = False
         try:
+            upstream_request(event["event"]["session"]["model"], "grok_web", self.account)
             send(event)
             while True:
                 raw, _ = ws.recv()
@@ -395,6 +403,7 @@ class GrokWeb:
             response.close()
 
     def image(self, request):
+        account_evidence(self.account, "grok_web")
         spec = resolve(request.model)
         ratio = {"1024x1024": "1:1", "1536x1024": "3:2", "1024x1536": "2:3",
                  "1792x1024": "3:2", "1024x1792": "2:3", "1280x720": "16:9", "720x1280": "9:16"}.get(request.size, "auto")
@@ -408,6 +417,7 @@ class GrokWeb:
                        "mediaGenInput": {"imageToImage": {"prompt": request.prompt, "inputAssets": assets, "aspectRatio": ratio}}}
             checkpoint("submitting")
             self.submitted = True
+            upstream_request(payload["modelName"], "grok_web", self.account, input_count=len(assets))
             r = self.request("POST", "/rest/app-chat/conversations/new", signed=True, json=payload,
                              stream=True, timeout=self.settings["image_timeout"])
             for event in frames(r):
@@ -491,6 +501,7 @@ class GrokWeb:
                    "mediaGenInput": {"textToVideo": {"prompt": body["prompt"], "aspectRatio": body["aspect_ratio"],
                     "duration": duration, "resolutionName": body["resolution"]}}, "kind": "CONVERSATION_KIND_IMAGINE"}
         self.submitted = True
+        upstream_request(payload["modelName"], "grok_web", self.account)
         response = self.request("POST", "/rest/app-chat/conversations/new", signed=True, json=payload,
                                 stream=True, timeout=self.settings["video_timeout"])
         for value in frames(response):

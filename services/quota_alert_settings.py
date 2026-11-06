@@ -16,7 +16,7 @@ def quota_alert_settings(value: object, existing: dict | None = None) -> dict:
             result[key] = value[key]
     if type(result["enabled"]) is not bool:
         raise ValueError("启用通知必须是布尔值")
-    for key, label, minimum, maximum in (("threshold", "剩余配额阈值", 0, 10000),
+    for key, label, minimum, maximum in (("threshold", "号池总剩余配额阈值", 0, 10000),
                                           ("repeat_minutes", "重复提醒间隔（分钟）", 15, 10080)):
         if type(result[key]) is not int or not minimum <= result[key] <= maximum:
             raise ValueError(f"{label}必须是 {minimum} 至 {maximum} 的整数")

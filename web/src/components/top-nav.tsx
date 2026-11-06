@@ -2,24 +2,19 @@
 
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
-import { Box, ChevronRight, ImageIcon, Images, LogOut, Menu, MessageSquareText, ScrollText, Settings, TerminalSquare, Users, Video } from "lucide-react";
+import { Box, ChevronRight, Images, LogOut, Menu, ScrollText, Settings, Users } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { HeaderActions } from "@/components/header-actions";
+import { creativeRoutes, getCreativeRoutes } from "@/components/creative-navigation";
 import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { getValidatedAuthSession } from "@/lib/auth-session";
 import { cn } from "@/lib/utils";
 import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 
-const creative = [
-  { href: "/chat", label: "对话", icon: MessageSquareText },
-  { href: "/image", label: "图片创作", icon: ImageIcon },
-  { href: "/video", label: "视频创作", icon: Video },
-];
 const management = [
   { href: "/accounts", label: "账号管理", icon: Users },
   { href: "/image-manager", label: "图片画廊", icon: Images },
   { href: "/logs", label: "请求日志", icon: ScrollText },
-  { href: "/debug", label: "API 调试", icon: TerminalSquare },
   { href: "/settings", label: "系统设置", icon: Settings },
 ];
 
@@ -35,7 +30,8 @@ export function TopNav({ children }: { children: ReactNode }) {
   }, [path]);
   if (path === "/login") return <main className="min-h-dvh">{children}</main>;
   const admin = session?.role === "admin";
-  const title = [...creative, ...management].find(item => item.href === path)?.label || "工作台";
+  const creative = getCreativeRoutes(session?.role);
+  const title = [...creativeRoutes, ...management].find(item => item.href === path)?.label || "工作台";
   const links = (mobile = false) => <nav aria-label={mobile ? "移动导航" : "主导航"} className="flex-1 space-y-7 overflow-y-auto py-7">
     {[{ title: "创作空间", items: creative }, ...(admin ? [{ title: "管理", items: management }] : [])].map(group => <div key={group.title} className="space-y-1">
       <p className="mb-3 px-3 text-[11px] text-muted-foreground/70">{group.title}</p>

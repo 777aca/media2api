@@ -38,6 +38,12 @@ test("search, channel, tier and status filters compose across both pools", () =>
   assert.deepEqual(partitionPoolRows(rows.slice(1, 3)), { tokens: ["codex-test"], grokIds: ["same-id"] });
 });
 
+test("log account links can search stable IDs without searching access tokens", () => {
+  const rows = poolRows([{ ...openai[0], pool_account_id: "pool-stable-id" }], grok, 0);
+  assert.equal(filterPoolRows(rows, "pool-stable-id", "all", "all", "all").length, 1);
+  assert.equal(filterPoolRows(rows, "same-id", "all", "all", "all").length, 1);
+});
+
 test("Grok statuses respect disabled, reauthentication and cooldown boundaries", () => {
   const base = grok[0];
   assert.equal(grokStatus({ ...base, cooldownUntil: 20 }, 19999), "限流");

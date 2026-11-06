@@ -1,364 +1,105 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, ImageIcon, LoaderCircle, RefreshCw, Search, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronLeft, ChevronRight, LoaderCircle, RefreshCw, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-
 import { DateRangeFilter } from "@/components/date-range-filter";
 import { ImageLightbox } from "@/components/image-lightbox";
-import { LogRequestParameters } from "@/components/log-request-parameters";
-import { ImageThumbnail, getImageThumbnailUrl } from "@/components/image-thumbnail";
+import { LogAccountLink, LogDiagnostics } from "@/components/log-diagnostics";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { deleteSystemLogs, fetchSystemLogs, type SystemLog } from "@/lib/api";
+import { deleteSystemLogs, fetchSystemLogs, type SystemLog, type SystemLogFilters } from "@/lib/api";
+import { durationText, errorLabels, kindLabels, logChannelLabels, logKind, logLabel, logRecord, logStatus, logText, modelPair, outputCount, safeResultUrls } from "@/lib/log-diagnostics";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
-const LogType = {
-  Call: "call",
-  Account: "account",
-} as const;
+const initialFilters: SystemLogFilters = { type: "call", start_date: "", end_date: "", status: "", channel: "", task_type: "", model: "", account: "", q: "" };
+const pageSize = 20;
 
-const typeLabels: Record<string, string> = {
-  [LogType.Call]: "调用日志",
-  [LogType.Account]: "账号管理日志",
-};
-
-function getDetailText(item: SystemLog, key: string) {
-  const value = item.detail?.[key];
-  return typeof value === "string" || typeof value === "number" ? String(value) : "-";
-}
-
-function formatDuration(item: SystemLog) {
-  const value = item.detail?.duration_ms;
-  return typeof value === "number" ? `${(value / 1000).toFixed(2)} s` : "-";
-}
-
-function getUrls(item: SystemLog | null) {
-  const urls = item?.detail?.urls;
-  return Array.isArray(urls) ? urls.filter((url): url is string => typeof url === "string") : [];
-}
-
-function getStatus(item: SystemLog) {
-  const status = item.detail?.status;
-  if (status === "success") return "成功";
-  if (status === "failed") return "失败";
-  return "-";
+function FilterSelect({ label, value, onChange, options }: { label: string; value?: string; onChange: (value: string) => void; options: Record<string, string> }) {
+  return <Select value={value || "all"} onValueChange={value => onChange(value === "all" ? "" : value)}><SelectTrigger aria-label={label} className="h-9 w-auto min-w-28 rounded-lg"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">{label}</SelectItem>{Object.entries(options).map(([key, text]) => <SelectItem key={key} value={key}>{text}</SelectItem>)}</SelectContent></Select>;
 }
 
 function LogsContent() {
+  const [draft, setDraft] = useState<SystemLogFilters>(initialFilters);
+  const [filters, setFilters] = useState<SystemLogFilters>(initialFilters);
   const [items, setItems] = useState<SystemLog[]>([]);
-  const [type, setType] = useState<string>(LogType.Call);
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [detailLog, setDetailLog] = useState<SystemLog | null>(null);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [lightboxIndex, setLightboxIndex] = useState(0);
-  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [deletingItems, setDeletingItems] = useState<SystemLog[]>([]);
-  const detailUrls = getUrls(detailLog);
-  const detailImages = detailUrls.map((url, index) => ({ id: `${index}`, src: url }));
-  const isCallLog = type === LogType.Call;
-  const pageSize = 10;
-  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
-  const safePage = Math.min(page, pageCount);
-  const currentRows = items.slice((safePage - 1) * pageSize, safePage * pageSize);
-  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const currentPageSelected = currentRows.length > 0 && currentRows.every((item) => selectedSet.has(item.id));
-  const allSelected = items.length > 0 && items.every((item) => selectedSet.has(item.id));
-
-  const loadLogs = async () => {
-    setIsLoading(true);
-    try {
-      const data = await fetchSystemLogs({ type, start_date: startDate, end_date: endDate });
-      setItems(data.items);
-      setSelectedIds((current) => current.filter((id) => data.items.some((item) => item.id === id)));
-      setPage(1);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "加载日志失败");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const clearFilters = () => {
-    setStartDate("");
-    setEndDate("");
-  };
-
-  const openDetail = (item: SystemLog) => {
-    setDetailLog(item);
-    setDetailOpen(true);
-  };
-
-  const openLogImage = (item: SystemLog, index: number) => {
-    setDetailLog(item);
-    setLightboxIndex(index);
-    setLightboxOpen(true);
-  };
-
-  const toggleIds = (ids: string[], checked: boolean) => {
-    setSelectedIds((current) => checked ? Array.from(new Set([...current, ...ids])) : current.filter((id) => !ids.includes(id)));
-  };
-
-  const confirmDelete = async () => {
-    const ids = deletingItems.map((item) => item.id);
-    if (ids.length === 0) return;
-    setIsDeleting(true);
-    try {
-      const data = await deleteSystemLogs(ids);
-      toast.success(`已删除 ${data.removed} 条日志`);
-      setDeletingItems([]);
-      setSelectedIds((current) => current.filter((id) => !ids.includes(id)));
-      if (detailLog && ids.includes(detailLog.id)) {
-        setDetailOpen(false);
-        setDetailLog(null);
-      }
-      await loadLogs();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "删除日志失败");
-    } finally {
-      setIsDeleting(false);
-    }
-  };
+  const [deleting, setDeleting] = useState(false);
+  const [detailLog, setDetailLog] = useState<SystemLog | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const isCall = filters.type === "call", pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const selectedSet = new Set(selectedIds);
+  const allSelected = items.length > 0 && items.every(item => selectedSet.has(item.id));
 
   useEffect(() => {
-    void loadLogs();
-  }, [type, startDate, endDate]);
+    let active = true;
+    setLoading(true); setLoadError(""); setSelectedIds([]);
+    void fetchSystemLogs({ ...filters, page, page_size: pageSize }).then(data => {
+      if (!active) return;
+      const lastPage = Math.max(1, Math.ceil(data.total / pageSize));
+      if (page > lastPage) { setPage(lastPage); return; }
+      setItems(data.items); setTotal(data.total);
+    }).catch(error => {
+      if (active) { setItems([]); setTotal(0); setLoadError(error instanceof Error ? error.message : "加载日志失败"); }
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [filters, page, revision]);
 
-  return (
-    <section className="space-y-5">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-1">
-          <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">Logs</div>
-          <h1 className="text-2xl font-semibold tracking-tight">日志管理</h1>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Select value={type} onValueChange={setType}>
-            <SelectTrigger className="h-10 w-[150px] rounded-xl border-stone-200 bg-white"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value={LogType.Call}>调用日志</SelectItem>
-              <SelectItem value={LogType.Account}>账号管理日志</SelectItem>
-            </SelectContent>
-          </Select>
-          <DateRangeFilter startDate={startDate} endDate={endDate} onChange={(start, end) => { setStartDate(start); setEndDate(end); }} />
-          <Button variant="outline" onClick={clearFilters} className="h-10 rounded-xl border-stone-200 bg-white px-4 text-stone-700">
-            清除筛选条件
-          </Button>
-          <Button onClick={() => void loadLogs()} disabled={isLoading} className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800">
-            {isLoading ? <LoaderCircle className="size-4 animate-spin" /> : <Search className="size-4" />}
-            查询
-          </Button>
-        </div>
-      </div>
+  function applyFilters(next = draft) { setPage(1); setFilters({ ...next }); }
+  function updateDraft(name: keyof SystemLogFilters, value: string) { setDraft(current => ({ ...current, [name]: value })); }
+  async function confirmDelete() {
+    if (!deletingItems.length) return;
+    setDeleting(true);
+    try {
+      const result = await deleteSystemLogs(deletingItems.map(item => item.id));
+      toast.success(`已删除 ${result.removed} 条日志`);
+      if (deletingItems.some(item => item.id === detailLog?.id)) setDetailLog(null);
+      setDeletingItems([]); setSelectedIds([]); setRevision(value => value + 1);
+    } catch (error) { toast.error(error instanceof Error ? error.message : "删除日志失败"); }
+    finally { setDeleting(false); }
+  }
 
-      <Card className="overflow-hidden rounded-2xl border-white/80 bg-white/90 shadow-sm">
-        <CardContent className="p-0">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-100 px-5 py-4">
-            <div className="flex flex-wrap items-center gap-3 text-sm text-stone-600">
-              <span>共 {items.length} 条</span>
-              <label className="flex items-center gap-2">
-                <Checkbox checked={currentPageSelected} onCheckedChange={(checked) => toggleIds(currentRows.map((item) => item.id), Boolean(checked))} />
-                本页全选
-              </label>
-              <label className="flex items-center gap-2">
-                <Checkbox checked={allSelected} onCheckedChange={(checked) => toggleIds(items.map((item) => item.id), Boolean(checked))} />
-                全选结果
-              </label>
-              {selectedIds.length > 0 ? <span>已选 {selectedIds.length} 条</span> : null}
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" className="h-8 rounded-lg px-3 text-stone-500" onClick={() => void loadLogs()} disabled={isLoading}>
-                <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
-                刷新
-              </Button>
-              <button type="button" className="text-sm text-stone-500 hover:text-stone-900 disabled:text-stone-300" onClick={() => setSelectedIds([])} disabled={selectedIds.length === 0 || isDeleting}>
-                取消选择
-              </button>
-              <Button variant="outline" className="h-8 rounded-lg border-rose-200 bg-white px-3 text-rose-600 hover:bg-rose-50" onClick={() => setDeletingItems(items.filter((item) => selectedSet.has(item.id)))} disabled={selectedIds.length === 0 || isDeleting}>
-                <Trash2 className="size-4" />
-                删除所选
-              </Button>
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <Table className="min-w-[900px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-12"></TableHead>
-                  <TableHead>时间（UTC+8）</TableHead>
-                  <TableHead>类型</TableHead>
-                  {isCallLog ? <TableHead>令牌名称</TableHead> : null}
-                  {isCallLog ? <TableHead>调用耗时</TableHead> : null}
-                  {isCallLog ? <TableHead>状态</TableHead> : null}
-                  {isCallLog ? <TableHead className="w-36">图片</TableHead> : null}
-                  <TableHead>简述</TableHead>
-                  <TableHead className="w-40">操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {currentRows.map((item) => {
-                  const urls = getUrls(item);
-                  return (
-                    <TableRow key={item.id} className="text-stone-600">
-                      <TableCell>
-                        <Checkbox checked={selectedSet.has(item.id)} onCheckedChange={(checked) => toggleIds([item.id], Boolean(checked))} />
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">{item.time}</TableCell>
-                      <TableCell><Badge variant="secondary" className="rounded-md">{typeLabels[item.type] || item.type}</Badge></TableCell>
-                      {isCallLog ? <TableCell>{getDetailText(item, "key_name")}</TableCell> : null}
-                      {isCallLog ? <TableCell>{formatDuration(item)}</TableCell> : null}
-                      {isCallLog ? (
-                        <TableCell>
-                          <Badge variant={item.detail?.status === "failed" ? "danger" : "success"} className="rounded-md">
-                            {getStatus(item)}
-                          </Badge>
-                        </TableCell>
-                      ) : null}
-                      {isCallLog ? (
-                        <TableCell>
-                          {urls.length ? (
-                            <div className="flex items-center gap-1.5">
-                              {urls.slice(0, 3).map((url, imageIndex) => (
-                                <button
-                                  key={`${url}-${imageIndex}`}
-                                  type="button"
-                                  className="relative size-9 overflow-hidden rounded-lg border border-stone-200 bg-stone-100"
-                                  onClick={() => openLogImage(item, imageIndex)}
-                                  title="预览图片"
-                                >
-                                  <ImageThumbnail src={url} thumbnailSrc={getImageThumbnailUrl(url)} className="h-full w-full" />
-                                </button>
-                              ))}
-                              {urls.length > 3 ? <span className="text-xs text-stone-400">+{urls.length - 3}</span> : null}
-                            </div>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-xs text-stone-400">
-                              <ImageIcon className="size-3.5" />
-                              -
-                            </span>
-                          )}
-                        </TableCell>
-                      ) : null}
-                      <TableCell className="max-w-[420px] truncate text-stone-500">{item.summary || "-"}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          <Button variant="ghost" className="h-8 rounded-lg px-3 text-stone-600" onClick={() => openDetail(item)}>
-                            查看详情
-                          </Button>
-                          <Button variant="ghost" className="h-8 rounded-lg px-3 text-rose-600 hover:bg-rose-50 hover:text-rose-700" onClick={() => setDeletingItems([item])}>
-                            删除
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
-          <div className="flex items-center justify-end gap-2 border-t border-stone-100 px-4 py-3 text-sm text-stone-500">
-            <span>第 {safePage} / {pageCount} 页，共 {items.length} 条</span>
-            <Button variant="outline" size="icon" className="size-9 rounded-lg border-stone-200 bg-white" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
-              <ChevronLeft className="size-4" />
-            </Button>
-            <Button variant="outline" size="icon" className="size-9 rounded-lg border-stone-200 bg-white" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>
-              <ChevronRight className="size-4" />
-            </Button>
-          </div>
-          {!isLoading && items.length === 0 ? <div className="px-6 py-14 text-center text-sm text-stone-500">没有找到日志</div> : null}
-        </CardContent>
-      </Card>
-      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="flex h-[min(88vh,860px)] w-[min(92vw,920px)] flex-col overflow-hidden rounded-2xl p-0">
-          <DialogHeader className="shrink-0 border-b border-stone-100 px-6 py-5">
-            <DialogTitle>日志详情</DialogTitle>
-            <DialogDescription className="sr-only">查看调用信息、传入参数和生成结果。</DialogDescription>
-          </DialogHeader>
-          <div className="flex-1 overflow-y-auto px-6 py-5">
-            <div className="space-y-4">
-              {detailLog?.type === LogType.Call ? (
-                <LogRequestParameters parameters={detailLog.detail?.request_params} />
-              ) : null}
-              <div className="grid gap-3 rounded-xl border border-stone-200 bg-white p-4 text-sm text-stone-600 md:grid-cols-2">
-                {Object.entries(detailLog?.detail || {})
-                  .filter(([key, value]) => key !== "urls" && typeof value !== "object")
-                  .map(([key, value]) => (
-                    <div key={key} className="flex items-start justify-between gap-4">
-                      <span className="text-stone-400">{key}</span>
-                      <span className="text-right font-medium break-all text-stone-700">{String(value)}</span>
-                    </div>
-                  ))}
-              </div>
-              {detailUrls.length ? (
-                <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-                  {detailUrls.map((url, index) => (
-                    <button
-                      key={url}
-                      type="button"
-                      className="aspect-square overflow-hidden rounded-xl border border-stone-200 bg-stone-100"
-                      onClick={() => {
-                        setLightboxIndex(index);
-                        setLightboxOpen(true);
-                      }}
-                    >
-                      <img src={url} alt="" className="h-full w-full object-cover" />
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <details className="rounded-xl border border-stone-200 bg-stone-50 p-4">
-                <summary className="cursor-pointer text-sm text-stone-600">完整日志 JSON</summary>
-                <pre className="mt-3 max-h-[48vh] overflow-auto text-xs leading-6 text-stone-700">
-                  {JSON.stringify(detailLog?.detail || {}, null, 2)}
-                </pre>
-              </details>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-      <ImageLightbox
-        images={detailImages}
-        currentIndex={lightboxIndex}
-        open={lightboxOpen}
-        onOpenChange={setLightboxOpen}
-        onIndexChange={setLightboxIndex}
-      />
-      <Dialog open={deletingItems.length > 0} onOpenChange={(open) => (!open ? setDeletingItems([]) : null)}>
-        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
-          <DialogHeader className="gap-2">
-            <DialogTitle>{deletingItems.length === 1 ? "删除日志" : "删除所选日志"}</DialogTitle>
-            <DialogDescription className="text-sm leading-6">
-              确认删除 {deletingItems.length} 条日志吗？删除后无法恢复。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" className="rounded-xl" onClick={() => setDeletingItems([])} disabled={isDeleting}>
-              取消
-            </Button>
-            <Button className="rounded-xl bg-rose-600 text-white hover:bg-rose-700" onClick={() => void confirmDelete()} disabled={isDeleting || deletingItems.length === 0}>
-              {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : null}
-              确认删除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </section>
-  );
+  return <section className="space-y-4">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-[10px] tracking-[0.18em] text-muted-foreground">REQUEST LOGS</p><h1 className="mt-1 text-xl font-semibold">请求日志</h1></div>
+      <div className="flex items-center gap-2"><Select value={filters.type} onValueChange={type => { const next = { ...initialFilters, type }; setDraft(next); applyFilters(next); }}><SelectTrigger aria-label="日志类型" className="h-9 w-36 rounded-xl"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="call">调用日志</SelectItem><SelectItem value="account">账号管理日志</SelectItem></SelectContent></Select><Button variant="outline" className="h-9 gap-2 rounded-xl bg-card shadow-none" onClick={() => setRevision(value => value + 1)} disabled={loading}><RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} />刷新</Button></div>
+    </div>
+    <form className="flex flex-wrap items-center gap-2 rounded-xl border bg-card p-3" onSubmit={event => { event.preventDefault(); applyFilters(); }}>
+      <Input aria-label="搜索请求日志" placeholder="请求 ID、任务 ID、摘要" className="h-9 min-w-48 flex-1 basis-56" value={draft.q || ""} onChange={event => updateDraft("q", event.target.value)} />
+      <DateRangeFilter startDate={draft.start_date || ""} endDate={draft.end_date || ""} onChange={(start_date, end_date) => setDraft(current => ({ ...current, start_date, end_date }))} />
+      {isCall && <><FilterSelect label="全部状态" value={draft.status} onChange={value => updateDraft("status", value)} options={{ failed: "失败", partial: "部分成功", success: "成功" }} /><FilterSelect label="全部渠道" value={draft.channel} onChange={value => updateDraft("channel", value)} options={{ web: "ChatGPT Web", codex: "Codex", grok_web: "Grok Web" }} /><FilterSelect label="全部任务" value={draft.task_type} onChange={value => updateDraft("task_type", value)} options={kindLabels} /><Input aria-label="筛选模型" placeholder="模型名称" className="h-9 w-40" value={draft.model || ""} onChange={event => updateDraft("model", event.target.value)} /><Input aria-label="筛选账号" placeholder="账号邮箱或 ID" className="h-9 w-44" value={draft.account || ""} onChange={event => updateDraft("account", event.target.value)} /></>}
+      <Button type="submit" size="sm" className="h-9 rounded-lg" disabled={loading}><Search className="size-4" />查询</Button><Button type="button" variant="ghost" size="sm" onClick={() => { const next = { ...initialFilters, type: filters.type }; setDraft(next); applyFilters(next); }}>重置</Button>
+    </form>
+    {loadError && <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{loadError}</p>}
+    <div className="overflow-hidden rounded-xl border bg-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 text-xs text-muted-foreground"><span>共 {total} 条 · 每页 {pageSize} 条{selectedIds.length ? ` · 已选 ${selectedIds.length} 条` : ""}</span><Button variant="ghost" size="sm" className="h-7 text-destructive" disabled={!selectedIds.length || loading || deleting} onClick={() => setDeletingItems(items.filter(item => selectedSet.has(item.id)))}><Trash2 className="size-3.5" />删除所选</Button></div>
+      <div className="overflow-x-auto" aria-busy={loading}><Table className={isCall ? "min-w-[1050px] [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap" : "min-w-[650px]"}><TableHeader><TableRow><TableHead className="w-10"><Checkbox aria-label="选择本页全部日志" checked={allSelected} disabled={loading} onCheckedChange={value => setSelectedIds(value ? items.map(item => item.id) : [])} /></TableHead><TableHead>时间（UTC+8）</TableHead><TableHead>{isCall ? "任务" : "类型"}</TableHead>{isCall && <><TableHead>模型</TableHead><TableHead>账号 / 渠道</TableHead><TableHead>状态</TableHead><TableHead>耗时</TableHead><TableHead>产出 / 请求</TableHead></>}<TableHead>{isCall ? "摘要 / 错误" : "摘要"}</TableHead><TableHead className="w-28">操作</TableHead></TableRow></TableHeader>
+        <TableBody>{loading ? <TableRow><TableCell colSpan={isCall ? 10 : 5} className="h-32 text-center"><LoaderCircle className="mx-auto size-5 animate-spin text-muted-foreground" /><span className="sr-only">加载日志中</span></TableCell></TableRow> : items.length ? items.map(item => {
+          const detail = logRecord(item.detail), models = modelPair(detail), status = logStatus(detail);
+          return <TableRow key={item.id} className="text-xs"><TableCell><Checkbox aria-label={`选择日志 ${item.id}`} checked={selectedSet.has(item.id)} onCheckedChange={checked => setSelectedIds(current => checked ? [...current, item.id] : current.filter(id => id !== item.id))} /></TableCell><TableCell className="whitespace-nowrap text-muted-foreground">{item.time}</TableCell><TableCell>{isCall ? kindLabels[logKind(detail)] : "账号管理"}</TableCell>{isCall && <><TableCell className="max-w-48"><p className="truncate" title={models.requested}>{models.requested}</p><p className="mt-1 truncate text-[10px] text-muted-foreground" title={models.actual}>实际：{models.actual}</p></TableCell><TableCell className="max-w-48"><LogAccountLink detail={detail} /><p className="mt-1 text-[10px] text-muted-foreground">{logLabel(logChannelLabels, detail.channel)}</p></TableCell><TableCell><Badge variant={status.variant} className="whitespace-nowrap px-2 text-[10px]">{status.label}</Badge></TableCell><TableCell className="whitespace-nowrap tabular-nums">{durationText(detail.duration_ms)}</TableCell><TableCell className="tabular-nums">{outputCount(detail)}</TableCell></>}<TableCell className="max-w-56"><p className="truncate" title={item.summary}>{item.summary || "—"}</p>{!!detail.error && <p className="mt-1 truncate text-[10px] text-destructive" title={logText(detail.error)}>{logLabel(errorLabels, detail.error_category, "") || logText(detail.error_code, "") || logText(detail.error)}</p>}</TableCell><TableCell><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setDetailLog(item)}>详情</Button><Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" aria-label={`删除日志 ${item.id}`} onClick={() => setDeletingItems([item])}><Trash2 className="size-3.5" /></Button></div></TableCell></TableRow>;
+        }) : <TableRow><TableCell colSpan={isCall ? 10 : 5} className="h-32 text-center text-muted-foreground">没有找到日志</TableCell></TableRow>}</TableBody>
+      </Table></div>
+      <div className="flex items-center justify-end gap-2 border-t px-4 py-3 text-xs text-muted-foreground"><span>第 {page} / {pageCount} 页</span><Button variant="outline" size="icon" className="size-8 rounded-lg" aria-label="上一页" disabled={loading || page <= 1} onClick={() => setPage(value => value - 1)}><ChevronLeft className="size-4" /></Button><Button variant="outline" size="icon" className="size-8 rounded-lg" aria-label="下一页" disabled={loading || page >= pageCount} onClick={() => setPage(value => value + 1)}><ChevronRight className="size-4" /></Button></div>
+    </div>
+    <Dialog open={!!detailLog} onOpenChange={open => { if (!open) setDetailLog(null); }}><DialogContent className="flex max-h-[90dvh] w-[calc(100%-2rem)] max-w-4xl flex-col gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-4xl"><DialogHeader className="shrink-0 border-b px-5 py-4"><DialogTitle>日志详情</DialogTitle><DialogDescription>请求参数、素材摘要及执行过程；未采集的历史字段显示未知。</DialogDescription></DialogHeader><div className="min-h-0 overflow-y-auto p-5">{detailLog?.type === "call" ? <LogDiagnostics item={detailLog} onPreview={index => { setLightboxIndex(index); setLightboxOpen(true); }} /> : <pre className="whitespace-pre-wrap break-all text-xs leading-6">{JSON.stringify(detailLog?.detail || {}, null, 2)}</pre>}</div></DialogContent></Dialog>
+    <ImageLightbox images={safeResultUrls(logRecord(detailLog?.detail)).map((src, index) => ({ id: String(index), src }))} currentIndex={lightboxIndex} open={lightboxOpen} onOpenChange={setLightboxOpen} onIndexChange={setLightboxIndex} />
+    <Dialog open={deletingItems.length > 0} onOpenChange={open => { if (!open && !deleting) setDeletingItems([]); }}><DialogContent><DialogHeader><DialogTitle>删除日志</DialogTitle><DialogDescription>确认删除所选 {deletingItems.length} 条日志？删除后无法恢复。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" disabled={deleting} onClick={() => setDeletingItems([])}>取消</Button><Button variant="destructive" disabled={deleting} onClick={() => void confirmDelete()}>{deleting && <LoaderCircle className="size-4 animate-spin" />}确认删除</Button></DialogFooter></DialogContent></Dialog>
+  </section>;
 }
 
 export default function LogsPage() {
   const { isCheckingAuth, session } = useAuthGuard(["admin"]);
-  if (isCheckingAuth || !session || session.role !== "admin") {
-    return <div className="flex min-h-[40vh] items-center justify-center"><LoaderCircle className="size-5 animate-spin text-stone-400" /></div>;
-  }
+  if (isCheckingAuth || session?.role !== "admin") return <div className="flex min-h-80 items-center justify-center"><LoaderCircle className="size-5 animate-spin text-muted-foreground" /></div>;
   return <LogsContent />;
 }

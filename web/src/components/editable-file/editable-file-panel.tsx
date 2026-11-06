@@ -234,7 +234,7 @@ export function EditableFilePanel({ title, kind, endpoint, defaultPrompt, imageR
     setSubmitting(true);
     try {
       const base64_images = images;
-      if (imageRequired && !base64_images.length) throw new Error("base64_images is empty");
+      if (imageRequired && !base64_images.length) throw new Error("请先上传需要拆分的图片");
       const task = await httpRequest<EditableFileTask>(endpoint, { method: "POST", body: { client_task_id: createClientTaskId(), prompt, base64_images } });
       const polledAt = Date.now();
       const id = taskIdOf(task);
@@ -272,21 +272,21 @@ export function EditableFilePanel({ title, kind, endpoint, defaultPrompt, imageR
 
   return (
     <>
-    <div className="grid h-full min-h-[calc(100vh-148px)] overflow-hidden rounded-lg border border-stone-200 bg-white shadow-sm dark:border-white/10 dark:bg-stone-950 lg:grid-cols-[288px_420px_minmax(0,1fr)]">
-      <aside className="flex min-h-0 flex-col border-b border-stone-200 bg-stone-50/70 dark:border-white/10 dark:bg-white/[0.02] lg:border-r lg:border-b-0">
+    <div className="grid min-w-0 flex-1 overflow-hidden rounded-xl border border-stone-200 bg-white dark:border-white/10 dark:bg-stone-950 xl:min-h-0 xl:grid-cols-[240px_minmax(280px,0.9fr)_minmax(0,1fr)]">
+      <aside className="flex max-h-64 min-h-0 min-w-0 flex-col border-b border-stone-200 bg-stone-50/70 dark:border-white/10 dark:bg-white/[0.02] xl:max-h-none xl:border-r xl:border-b-0">
         <div className="flex h-14 items-center justify-between border-b border-stone-200 px-4 dark:border-white/10">
           <div className="flex items-center gap-2 text-sm font-semibold text-stone-950 dark:text-stone-50">
             <History className="size-4" />
             历史记录
           </div>
           <div className="flex gap-1">
-            <Button size="sm" variant="ghost" onClick={createDraft}>
+            <Button size="sm" variant="ghost" aria-label="新建任务" onClick={createDraft}>
               <Plus />
             </Button>
-            <Button size="sm" variant="ghost" onClick={refreshAll} disabled={polling}>
+            <Button size="sm" variant="ghost" aria-label="同步任务" onClick={refreshAll} disabled={polling}>
               {polling ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setDeleteConfirm({ type: "all", ids: tasks.filter((task) => task.kind === kind).map(taskIdOf).filter(Boolean) })} disabled={!visibleTasks.length}>
+            <Button size="sm" variant="ghost" aria-label="清空历史记录" onClick={() => setDeleteConfirm({ type: "all", ids: tasks.filter((task) => task.kind === kind).map(taskIdOf).filter(Boolean) })} disabled={!visibleTasks.length}>
               <Trash2 />
             </Button>
           </div>
@@ -326,10 +326,10 @@ export function EditableFilePanel({ title, kind, endpoint, defaultPrompt, imageR
                     {(task.prompt_preview || drafts[id]?.prompt) ? <div className="mt-2 line-clamp-2 text-xs leading-5 text-stone-500 dark:text-stone-400">{task.prompt_preview || drafts[id]?.prompt}</div> : null}
                   </button>
                   <div className="flex shrink-0 opacity-100 sm:opacity-0 sm:transition sm:group-hover:opacity-100">
-                    <Button size="sm" variant="ghost" onClick={() => startRename(id)} className="size-7 px-0">
+                    <Button size="sm" variant="ghost" aria-label="重命名任务" onClick={() => startRename(id)} className="size-7 px-0">
                       <Pencil className="size-3.5" />
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setDeleteConfirm({ type: "one", id })} className="size-7 px-0 text-stone-400 hover:text-rose-500">
+                    <Button size="sm" variant="ghost" aria-label="删除任务记录" onClick={() => setDeleteConfirm({ type: "one", id })} className="size-7 px-0 text-stone-400 hover:text-rose-500">
                       <Trash2 className="size-3.5" />
                     </Button>
                   </div>
@@ -342,7 +342,7 @@ export function EditableFilePanel({ title, kind, endpoint, defaultPrompt, imageR
         </div>
       </aside>
 
-      <section className="flex min-h-0 flex-col border-b border-stone-200 dark:border-white/10 lg:border-r lg:border-b-0">
+      <section className="flex min-h-0 min-w-0 flex-col border-b border-stone-200 dark:border-white/10 xl:border-r xl:border-b-0">
         <div className="flex h-14 items-center justify-between border-b border-stone-200 px-5 dark:border-white/10">
           <h2 className="text-sm font-semibold text-stone-950 dark:text-stone-50">{title}</h2>
           <Button size="sm" onClick={() => void submit()} disabled={submitting || running}>
@@ -383,7 +383,7 @@ export function EditableFilePanel({ title, kind, endpoint, defaultPrompt, imageR
         </div>
       </section>
 
-      <section className="flex min-h-0 flex-col">
+      <section className="flex min-h-0 min-w-0 flex-col">
         <div className="flex h-14 items-center justify-between border-b border-stone-200 px-5 dark:border-white/10">
           <h2 className="text-sm font-semibold text-stone-950 dark:text-stone-50">生成状态</h2>
           {selectedTask ? <span className={cn("rounded-full border px-2.5 py-1 text-xs", statusClass(selectedTask.status))}>{statusText(selectedTask.status)}</span> : null}
@@ -391,7 +391,7 @@ export function EditableFilePanel({ title, kind, endpoint, defaultPrompt, imageR
         <div className="min-h-0 flex-1 overflow-auto p-5">
           {selectedTask ? (
             <div className="space-y-5">
-              <div className="grid gap-3 sm:grid-cols-[150px_150px_minmax(0,1fr)]">
+              <div className="grid grid-cols-2 gap-3 [&>div:last-child]:col-span-2">
                 <div className="rounded-md border border-stone-200 bg-stone-50 p-4 dark:border-white/10 dark:bg-white/[0.03]">
                   <div className="text-xs text-stone-500 dark:text-stone-400">状态</div>
                   <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-stone-950 dark:text-stone-50">

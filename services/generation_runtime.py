@@ -331,7 +331,8 @@ class GenerationRuntime:
         checkpoint = ExecutionCheckpoint(
             persist=lambda **values: self._persist_checkpoint(task_id, **values),
             raw_writer=lambda items: self._write_json(row["job_id"], f"{task_id}-raw.json", items),
-            phase=row["phase"], conversation_id=row["conversation_id"] or "", account_id=row["account_id"] or "")
+            phase=row["phase"], conversation_id=row["conversation_id"] or "", account_id=row["account_id"] or "", attempt=row["attempt"],
+            details={"diagnostics": json.loads(row.get("diagnostics") or "{}")})
         token = execution_checkpoint.set(checkpoint)
         try:
             from services.protocol.conversation import ConversationRequest, ImageOutput
@@ -414,7 +415,7 @@ class GenerationRuntime:
     def _log_task(self, task_id: str, phase: str) -> None:
         try:
             from services.log_service import log_service, LOG_TYPE_CALL, sanitize_request_parameters
-            from services.image_call_logging import task_diagnostics
+            from services.image_call_logging import task_diagnostics, runtime_call_details
             from utils.log import logger
             row = self.store.task(task_id, include_output=False)
             diagnostics = task_diagnostics(row, phase)
@@ -426,10 +427,21 @@ class GenerationRuntime:
             identity = json.loads(row["identity"])
             payload = json.loads(row["payload"])
             request_params = {key: value for key, value in payload.items() if key not in {"base_url", "client_task_ids", "has_inputs"}}
+            if payload.get("has_inputs"):
+                try:
+                    # Read existing execution inputs only; the log receives the sanitized
+                    # snapshot below, never another persisted copy of the source material.
+                    inputs = json.loads(self._private_path(row["job_id"], "inputs.json").read_text(encoding="utf-8"))
+                    if isinstance(inputs, dict):
+                        request_params.update({key: inputs[key] for key in ("images", "mask")
+                                               if inputs.get(key) is not None})
+                except (OSError, ValueError):
+                    # Retention cleanup or an unreadable input must not drop the call log.
+                    pass
             log_service.add(LOG_TYPE_CALL, "生图任务状态", {"image_task_id": row["job_id"], "image_child_id": task_id,
                             "key_id": row["owner"], "key_name": identity.get("name", ""), "role": identity.get("role", ""),
                             "endpoint": row["endpoint"], "model": row["model"], "channel": row["channel"], "status": row["status"],
-                            **diagnostics,
+                            **diagnostics, **runtime_call_details(row["job_id"], row["owner"], store=self.store),
                             "request_params": sanitize_request_parameters(request_params)})
         except Exception:
             pass

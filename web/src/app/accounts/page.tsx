@@ -186,6 +186,17 @@ function AccountsPageContent() {
   }, []);
   const modelCatalog = useModelCatalog();
   const textModelCatalog = useModelCatalog("text");
+  const syncingModelsRef = useRef(false);
+  const modelsLoading = modelCatalog.loading || textModelCatalog.loading;
+  const syncAllModels = async () => {
+    if (syncingModelsRef.current || modelsLoading) return;
+    syncingModelsRef.current = true;
+    try {
+      await Promise.allSettled([modelCatalog.sync(), textModelCatalog.sync()]);
+    } finally {
+      syncingModelsRef.current = false;
+    }
+  };
   const grokRevisionRef = useRef(grok.revision);
   useEffect(() => {
     if (grokRevisionRef.current !== grok.revision) {
@@ -197,6 +208,9 @@ function AccountsPageContent() {
   const didLoadAccountsRef = useRef(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
+  useEffect(() => {
+    setQuery(new URLSearchParams(window.location.search).get("q") || "");
+  }, []);
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<AccountStatus | "all">("all");
   const [page, setPage] = useState(1);
@@ -810,7 +824,7 @@ function AccountsPageContent() {
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
+            className="h-10 gap-2 rounded-xl border-border bg-card px-4 text-foreground shadow-none hover:bg-accent hover:text-accent-foreground"
             onClick={() => { void loadAccounts(); void grok.reload(); }}
             disabled={poolLoading || poolBusy}
           >
@@ -819,7 +833,7 @@ function AccountsPageContent() {
           </Button>
           <Button
             variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
+            className="h-10 gap-2 rounded-xl border-border bg-card px-4 text-foreground shadow-none hover:bg-accent hover:text-accent-foreground"
             onClick={() => void refreshRows(rows)}
             disabled={poolLoading || poolBusy || rows.length === 0}
           >
@@ -848,7 +862,7 @@ function AccountsPageContent() {
           />
           <Button
             variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
+            className="h-10 gap-2 rounded-xl border-border bg-card px-4 text-foreground shadow-none hover:bg-accent hover:text-accent-foreground"
             onClick={() => downloadTokens(accounts)}
             disabled={accounts.length === 0}
           >
@@ -1010,11 +1024,16 @@ function AccountsPageContent() {
           })}
         </div>
         <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-          <CardContent className="p-4">
-            <ModelCatalog state={modelCatalog} />
-            <div className="mt-5 border-t border-stone-200 pt-5">
-              <ModelCatalog state={textModelCatalog} kind="text" />
+          <CardContent className="relative px-3 py-1">
+            <ModelCatalog state={modelCatalog} compact />
+            <div className="border-t border-stone-200/60">
+              <ModelCatalog state={textModelCatalog} kind="text" compact />
             </div>
+            <Button variant="ghost" size="sm" className="absolute right-3 top-2 h-9 gap-1.5 px-2 text-xs text-stone-500"
+              aria-label="同步所有模型目录" title="同时同步图片和文本模型目录" disabled={modelsLoading} onClick={() => void syncAllModels()}>
+              <RefreshCw aria-hidden="true" className={cn("size-3.5", modelsLoading && "animate-spin")} />
+              {modelCatalog.syncing || textModelCatalog.syncing ? "同步中" : "同步"}
+            </Button>
           </CardContent>
         </Card>
       </section>

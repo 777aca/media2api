@@ -71,7 +71,7 @@ export function filterPoolRows(rows: PoolRow[], query: string, channel: string, 
     (channel === "all" || row.channel === channel) &&
     (tier === "all" || row.tier === tier) &&
     (status === "all" || row.status === status) &&
-    `${row.name} ${channelLabels[row.channel]} ${row.tier}`.toLowerCase().includes(search),
+    `${row.name} ${channelLabels[row.channel]} ${row.tier} ${row.kind === "grok" ? row.account.id : row.account.pool_account_id || ""}`.toLowerCase().includes(search),
   );
 }
 

@@ -70,7 +70,7 @@ export function QuotaAlertSettingsCard() {
 
   return <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm"><CardContent className="space-y-5 p-6">
     <div className="flex items-center gap-2"><BellRing className="size-5 text-amber-600" /><h2 className="text-lg font-semibold">飞书配额提醒</h2></div>
-    <p className="text-sm text-stone-500">账号剩余配额达到阈值时推送到飞书群。多个账号合并通知；从低配额变为耗尽时追加提醒。</p>
+    <p className="text-sm text-stone-500">同类额度跨账号相加，总剩余配额达到阈值时推送到飞书群。总配额从不足变为耗尽时追加提醒。</p>
     {error && <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</div>}
     {!settings ? <div className="flex items-center gap-3 text-sm text-stone-500">{error ? <Button variant="outline" onClick={() => setLoadVersion((value) => value + 1)}>重新加载</Button> : <><LoaderCircle className="size-4 animate-spin" />加载通知配置…</>}</div> : <>
       <label className="flex items-center gap-2 text-sm font-medium"><Checkbox checked={settings.enabled} disabled={busy}
@@ -82,14 +82,15 @@ export function QuotaAlertSettingsCard() {
         <label className="space-y-2 text-sm"><span>签名密钥（可选）</span><Input type="password" autoComplete="new-password" disabled={busy || clearSecret} value={settings.secret}
           placeholder={settings.has_secret ? "已配置，留空保留原密钥" : "机器人启用签名校验时填写"}
           onChange={(event) => setSettings({ ...settings, secret: event.target.value })} /></label>
-        <label className="space-y-2 text-sm"><span>剩余配额 ≤ 此数值时提醒</span><Input type="number" min={0} max={10000} step={1} disabled={busy} value={threshold} onChange={(event) => setThreshold(event.target.value)} />
-          <span className="block text-xs text-stone-500">可自定义，设为 0 只提醒耗尽。次数额度按次判断，Grok 周额度按剩余百分比判断。</span></label>
+        <label className="space-y-2 text-sm"><span>号池总剩余配额 ≤ 此数值时提醒</span><Input type="number" min={0} max={10000} step={1} disabled={busy} value={threshold} onChange={(event) => setThreshold(event.target.value)} />
+          <span className="block text-xs text-stone-500">可自定义，设为 0 只提醒总额度耗尽。例如两个账号各剩 2 次，总计 4 次，阈值为 3 时不提醒。</span></label>
         <label className="space-y-2 text-sm"><span>重复提醒间隔（分钟）</span><Input type="number" min={15} max={10080} step={1} disabled={busy} value={repeatMinutes} onChange={(event) => setRepeatMinutes(event.target.value)} />
           <span className="block text-xs text-stone-500">持续不足时按此间隔提醒；配额恢复后再次不足会重新提醒。</span></label>
       </div>
       {settings.has_secret && <label className="flex items-center gap-2 text-xs text-stone-500"><Checkbox checked={clearSecret} disabled={busy} onCheckedChange={(value) => setClearSecret(value === true)} />清除已保存的签名密钥</label>}
       <div className="rounded-lg bg-stone-50 p-3 text-xs leading-6 text-stone-500">
-        每 30 秒检查本地最新配额；未获取配额、已禁用、异常账号及已过重置时间的旧配额不触发提醒。没有明确配额的 Codex 账号暂不提醒。<br />
+        每 30 秒汇总已知配额：ChatGPT 图片、Grok 各类次数分别求和，不混加不同用途额度。Grok 周额度按总剩余额度 ÷ 总额度计算百分比，再与阈值比较。<br />
+        未获取配额、已禁用、异常账号及过期配额不计入；通知显示已知总剩余和参与汇总的账号数。无明确配额的 Codex 账号暂不计入。<br />
         如机器人设置了关键词，请添加 <span className="font-medium text-stone-700">media2api</span>。测试按钮会向群内发送一条测试消息，不保存或启用配置。
       </div>
       <div className="flex flex-wrap items-center gap-2">

@@ -40,7 +40,7 @@ export function parseQuotaAlerts(value: unknown): { settings: QuotaAlertSettings
 }
 
 export function quotaAlertPayload(settings: QuotaAlertSettings, threshold: string, repeatMinutes: string, clearSecret: boolean) {
-  if (!/^\d+$/.test(threshold) || Number(threshold) > 10000) throw new Error("剩余配额阈值请输入 0 至 10000 的整数");
+  if (!/^\d+$/.test(threshold) || Number(threshold) > 10000) throw new Error("号池总剩余配额阈值请输入 0 至 10000 的整数");
   if (!/^\d+$/.test(repeatMinutes) || Number(repeatMinutes) < 15 || Number(repeatMinutes) > 10080) throw new Error("重复提醒间隔请输入 15 至 10080 分钟");
   return { enabled: settings.enabled, webhook_url: settings.webhook_url.trim(), secret: settings.secret.trim(),
     threshold: Number(threshold), repeat_minutes: Number(repeatMinutes), clear_secret: clearSecret };

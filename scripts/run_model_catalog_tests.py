@@ -19,6 +19,12 @@ import unittest
 
 
 DEFAULT_TESTS = [
+    "test.test_log_diagnostics",
+    "test.test_request_asset_logging",
+    "test.test_request_logging",
+    "test.test_image_call_logging",
+    "test.test_log_timezones",
+    "test.test_removed_debug_page",
     "test.test_quota_alerts",
     "test.test_model_catalog_service",
     "test.test_text_model_routing",
