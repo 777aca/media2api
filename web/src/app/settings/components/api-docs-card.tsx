@@ -31,7 +31,7 @@ const docs: ApiDoc[] = [
       ["Authorization", "header", "Bearer <auth-key>。"],
     ],
     output: [
-      ["data", "array", "仅返回当前账号池对应的图片型号，包含 id、object、created、owned_by。"],
+      ["data", "array", "返回当前已导入账号支持的模型，包含 id、object、created、owned_by。"],
     ],
     example: (baseUrl: string, key: string) => `curl ${baseUrl}/models \\
   -H "Authorization: Bearer ${key}"`,

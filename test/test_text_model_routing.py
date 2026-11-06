@@ -126,6 +126,7 @@ class TextAccountRoutingTests(unittest.TestCase):
             self.service.get_text_access_token(model="restricted-model")
 
     def test_channel_selection_never_borrows_other_channel_permission(self) -> None:
+        self.service.update_account("plus", {"source_type": "codex"}, quiet=True)
         web_id = self.service.get_account("free")["pool_account_id"]
         codex_id = self.service.get_account("plus")["pool_account_id"]
         route = ModelRoute(
@@ -142,6 +143,7 @@ class TextAccountRoutingTests(unittest.TestCase):
                 self.service.get_text_access_token(excluded_tokens={"free"}, model="shared-model", channel="web")
 
     def test_codex_only_route_cannot_select_web_account_or_anonymous_fallback(self) -> None:
+        self.service.update_account("pro", {"source_type": "codex"}, quiet=True)
         codex_id = self.service.get_account("pro")["pool_account_id"]
         route = ModelRoute(account_ids=frozenset({codex_id}), web_account_ids=frozenset(),
                            codex_account_ids=frozenset({codex_id}), allow_anonymous=True)
@@ -173,6 +175,37 @@ class TextAccountRoutingTests(unittest.TestCase):
         self.assertEqual(route.account_ids_for_channel("codex"), frozenset())
         with self.assertRaises(ValueError):
             route.account_ids_for_channel("unknown")
+
+    def test_stale_codex_permission_cannot_select_web_import(self) -> None:
+        account_id = self.service.get_account("pro")["pool_account_id"]
+        route = ModelRoute(account_ids=frozenset({account_id}), codex_account_ids=frozenset({account_id}))
+        with mock.patch("services.model_service.model_catalog_service.route_for_model", return_value=route), \
+                self.assertRaises(ModelUnavailableError):
+            self.service.get_text_access_token(model="gpt-6-luna", channel="codex")
+
+    def test_source_changed_during_token_refresh_cannot_use_old_channel(self) -> None:
+        route = ModelRoute(account_ids=frozenset({self.service.get_account("pro")["pool_account_id"]}))
+
+        def refresh(token, **_kwargs):
+            self.service.update_account(token, {"source_type": "codex"}, quiet=True)
+            return token
+
+        self.service.refresh_access_token = refresh
+        with mock.patch("services.model_service.model_catalog_service.route_for_model", return_value=route), \
+                self.assertRaises(ModelUnavailableError):
+            self.service.get_text_access_token(model="web-model")
+
+    def test_auto_web_route_excludes_codex_imports(self) -> None:
+        for token in ("free", "plus", "pro", "pro-other"):
+            self.service.update_account(token, {"source_type": "codex"}, quiet=True)
+        self.assertEqual(self.service.get_text_access_token(model="auto"), "")
+
+    def test_password_and_oauth_login_remain_eligible_for_web_models(self) -> None:
+        route = ModelRoute(account_ids=frozenset({self.service.get_account("pro")["pool_account_id"]}))
+        with mock.patch("services.model_service.model_catalog_service.route_for_model", return_value=route):
+            for source in ("password", "oauth_login"):
+                self.service.update_account("pro", {"source_type": source}, quiet=True)
+                self.assertEqual(self.service.get_text_access_token(model="web-model"), "pro")
 
 
 class TextProtocolRoutingTests(unittest.TestCase):

@@ -238,7 +238,10 @@ class CodexTextBackend:
             )
             status = response.status_code
             if status == 401:
-                raise CodexTextError("The upstream authentication token has been invalidated.", "token_invalidated")
+                raise CodexTextError(
+                    "Codex 上游鉴权被拒绝（HTTP 401），请检查账号的 Codex 登录凭据；模型目录可见不代表可调用。",
+                    "upstream_authentication_failed",
+                )
             if status == 429:
                 raise CodexTextError("The selected account has reached the upstream model usage limit.", "upstream_rate_limit", 429)
             if not 200 <= status < 300:

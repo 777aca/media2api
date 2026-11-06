@@ -61,7 +61,6 @@ class ModelCatalogService:
         self._has_catalog = False
         self._expires_at = 0.0
         self._account_signature: tuple[tuple[str, ...], ...] = ()
-        self._anonymous_models: dict[str, dict[str, Any]] = {}
         self._models_by_account_id: dict[str, dict[str, dict[str, Any]]] = {}
         self._codex_models_by_account_id: dict[str, dict[str, dict[str, Any]]] = {}
         self._sync: dict[str, Any] = {
@@ -84,6 +83,10 @@ class ModelCatalogService:
             models.setdefault(model_id, {key: value for key, value in item.items() if key in public_fields})
         return models
 
+    @staticmethod
+    def _account_channel(account: dict | None) -> str:
+        return AccountService.text_channel_for_account(account) if account else ""
+
     def _account_snapshot(self) -> tuple[dict[str, dict], tuple[tuple[str, ...], ...]]:
         active: dict[str, dict] = {}
         signature: list[tuple[str, ...]] = []
@@ -100,7 +103,7 @@ class ModelCatalogService:
                 str(account.get("type") or ""), str(account.get("source_type") or "web"),
                 hashlib.sha256(str(account.get("proxy") or "").encode()).hexdigest(),
             ))
-            if status not in {"禁用", "异常"}:
+            if status not in {"禁用", "异常"} and self._account_channel(account) in {"web", "codex"}:
                 active[account_id] = dict(account)
         return active, tuple(sorted(signature))
 
@@ -139,15 +142,15 @@ class ModelCatalogService:
         except Exception as exc:
             return None, self._error_code(exc)
 
-    def _fetch_source(self, account: dict | None, channel: str = "web") -> tuple[dict[str, dict[str, Any]] | None, str | None]:
+    def _fetch_source(self, account: dict, channel: str = "web") -> tuple[dict[str, dict[str, Any]] | None, str | None]:
         try:
-            if account is None:
-                return self._fetch_models(), None
             current = self._accounts.get_account(account["access_token"])
             if (
                 not current or current.get("pool_account_id") != account["pool_account_id"]
                 or current.get("status") in {"禁用", "异常"}
             ):
+                return None, "account_unavailable"
+            if self._account_channel(current) != channel:
                 return None, "account_unavailable"
             return self._fetch_models(current["access_token"], channel=channel), None
         except Exception as exc:  # 外部异常原文可能携带凭据，仅公开固定错误码。
@@ -161,9 +164,9 @@ class ModelCatalogService:
             return max(0.0, deadline - time.monotonic())
 
         # 不使用 with：退出时的 shutdown(wait=True) 会等待卡住的线程，使截止时间失效。
-        executor = ThreadPoolExecutor(max_workers=min(4, len(active) * 2 + 1))
+        executor = ThreadPoolExecutor(max_workers=max(1, min(4, len(active))))
         try:
-            futures = {(None, "web"): executor.submit(self._fetch_source, None)}
+            futures = {}
             preparations = {
                 account_id: executor.submit(self._prepare_account, account)
                 for account_id, account in active.items()
@@ -173,11 +176,11 @@ class ModelCatalogService:
                     account, code = preparation.result(timeout=remaining())
                 except FutureTimeout:
                     account, code = None, "refresh_timeout"
-                for channel in ("web", "codex"):
-                    if account is None:
-                        outcomes[(account_id, channel)] = None, code
-                    else:
-                        futures[(account_id, channel)] = executor.submit(self._fetch_source, account, channel)
+                channel = self._account_channel(active[account_id])
+                if account is None:
+                    outcomes[(account_id, channel)] = None, code
+                else:
+                    futures[(account_id, channel)] = executor.submit(self._fetch_source, account, channel)
             for source, future in futures.items():
                 try:
                     outcomes[source] = future.result(timeout=remaining())
@@ -191,26 +194,24 @@ class ModelCatalogService:
         with self._condition:
             self._models_by_account_id = {
                 account_id: models for account_id, models in self._models_by_account_id.items()
-                if account_id in current_active
+                if self._account_channel(current_active.get(account_id)) == "web"
             }
             self._codex_models_by_account_id = {
                 account_id: models for account_id, models in self._codex_models_by_account_id.items()
-                if account_id in current_active
+                if self._account_channel(current_active.get(account_id)) == "codex"
             }
             errors: list[dict[str, str | None]] = []
             successful_sources = 0
             for (account_id, channel), (models, code) in outcomes.items():
                 if models is not None:
                     successful_sources += 1
-                    if account_id is None:
-                        self._anonymous_models = models
-                    elif account_id in current_active:
+                    if self._account_channel(current_active.get(account_id)) == channel:
                         cache = self._codex_models_by_account_id if channel == "codex" else self._models_by_account_id
                         cache[account_id] = models
                 else:
                     error = {
                         "account_id": account_id,
-                        "source": "anonymous" if account_id is None else "account",
+                        "source": "account",
                         "channel": channel,
                         "code": code or "upstream_unavailable",
                     }
@@ -252,11 +253,11 @@ class ModelCatalogService:
             self._sync["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
             self._models_by_account_id = {
                 account_id: models for account_id, models in self._models_by_account_id.items()
-                if account_id in active
+                if self._account_channel(active.get(account_id)) == "web"
             }
             self._codex_models_by_account_id = {
                 account_id: models for account_id, models in self._codex_models_by_account_id.items()
-                if account_id in active
+                if self._account_channel(active.get(account_id)) == "codex"
             }
         if stale_ok:
             Thread(
@@ -289,13 +290,13 @@ class ModelCatalogService:
     def _union(self) -> dict[str, dict[str, Any]]:
         active, _signature = self._account_snapshot()
         with self._lock:
-            union = {model_id: dict(item) for model_id, item in self._anonymous_models.items()}
+            union: dict[str, dict[str, Any]] = {}
             for account_id in sorted(active):
-                for cache in (self._models_by_account_id, self._codex_models_by_account_id):
-                    for model_id, item in cache.get(account_id, {}).items():
-                        current = union.setdefault(model_id, dict(item))
-                        if not current.get("display_name") and item.get("display_name"):
-                            current["display_name"] = item["display_name"]
+                cache = self._codex_models_by_account_id if self._account_channel(active[account_id]) == "codex" else self._models_by_account_id
+                for model_id, item in cache.get(account_id, {}).items():
+                    current = union.setdefault(model_id, dict(item))
+                    if not current.get("display_name") and item.get("display_name"):
+                        current["display_name"] = item["display_name"]
             return union
 
     def list_models(self, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -312,11 +313,13 @@ class ModelCatalogService:
             for model in result["data"]:
                 model_id = model["id"]
                 channels = []
-                if model_id in self._anonymous_models or any(
+                if any(
                     model_id in self._models_by_account_id.get(account_id, {}) for account_id in active
+                    if self._account_channel(active[account_id]) == "web"
                 ):
                     channels.append("web")
-                if any(model_id in self._codex_models_by_account_id.get(account_id, {}) for account_id in active):
+                if any(model_id in self._codex_models_by_account_id.get(account_id, {}) for account_id in active
+                       if self._account_channel(active[account_id]) == "codex"):
                     channels.append("codex")
                 data.append({**model, "source": "official", "channels": channels})
         return {
@@ -331,17 +334,17 @@ class ModelCatalogService:
         with self._lock:
             web_ids = frozenset(
                     account_id for account_id, models in self._models_by_account_id.items()
-                    if account_id in active and model in models
+                    if self._account_channel(active.get(account_id)) == "web" and model in models
             )
             codex_ids = frozenset(
                 account_id for account_id, models in self._codex_models_by_account_id.items()
-                if account_id in active and model in models
+                if self._account_channel(active.get(account_id)) == "codex" and model in models
             )
             return ModelRoute(
                 account_ids=web_ids | codex_ids,
                 web_account_ids=web_ids,
                 codex_account_ids=codex_ids,
-                allow_anonymous=model in self._anonymous_models,
+                allow_anonymous=False,
             )
 
 

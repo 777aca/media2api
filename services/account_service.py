@@ -193,6 +193,11 @@ class AccountService:
     def _normalize_source_type(value: object) -> str:
         return str(value or "web").strip().lower() or "web"
 
+    @classmethod
+    def text_channel_for_account(cls, account: dict) -> str:
+        source = cls._normalize_source_type(account.get("source_type"))
+        return "web" if source in {"web", "password", "oauth_login"} else source
+
     @staticmethod
     def _normalize_account_type(value: object) -> str | None:
         raw = str(value or "").strip()
@@ -1141,6 +1146,7 @@ class AccountService:
                     account
                     for account in self._accounts.values()
                     if account.get("status") not in {"禁用", "异常"}
+                       and self.text_channel_for_account(account) == channel
                        and (allowed_ids is None or account.get("pool_account_id") in allowed_ids)
                        and account.get("pool_account_id") not in attempted_ids | excluded_ids
                        and account.get("access_token")
@@ -1164,6 +1170,7 @@ class AccountService:
                 if (
                     current and current.get("pool_account_id") == account_id
                     and current.get("status") not in {"禁用", "异常"}
+                    and self.text_channel_for_account(current) == channel
                 ):
                     return current["access_token"]
 

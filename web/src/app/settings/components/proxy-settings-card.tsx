@@ -82,7 +82,7 @@ export function ProxySettingsCard() {
                 className="h-11 rounded-xl border-stone-200 bg-white"
               />
               <p className="text-sm text-stone-500">
-                留空表示不使用代理。请按完整地址填写，例如 `http://127.0.0.1:7890`、`http://用户名:密码@127.0.0.1:7890` 或 `socks5://127.0.0.1:7890`。
+                留空表示直连。支持 HTTP / SOCKS5 地址，也支持“主机:端口:账号:密码”格式。账号密码中的特殊字符需 URL 编码。
               </p>
             </div>
 
@@ -105,7 +105,7 @@ export function ProxySettingsCard() {
                 variant="outline"
                 className="h-10 rounded-xl border-stone-200 bg-white px-5 text-stone-700"
                 onClick={() => void handleTest()}
-                disabled={isTesting || isLoadingConfig}
+                disabled={isTesting || isLoadingConfig || !config}
               >
                 {isTesting ? <LoaderCircle className="size-4 animate-spin" /> : <PlugZap className="size-4" />}
                 测试代理
@@ -113,7 +113,7 @@ export function ProxySettingsCard() {
               <Button
                 className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
                 onClick={() => void saveConfig()}
-                disabled={isSavingConfig}
+                disabled={isSavingConfig || !config}
               >
                 {isSavingConfig ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
                 保存配置

@@ -156,7 +156,7 @@ def _sources_from_value(value: object) -> list[ImageSource]:
     raise HTTPException(status_code=400, detail={"error": "invalid image reference"})
 
 
-def _json_image_sources(body: dict[str, Any]) -> list[ImageSource]:
+def json_image_sources(body: dict[str, Any]) -> list[ImageSource]:
     """读取 JSON 图片引用：优先支持官方 images 数组字段。"""
     sources: list[ImageSource] = []
     for key in ("images", "image", "image_url"):
@@ -186,7 +186,7 @@ async def parse_image_edit_request(request: Request) -> tuple[dict[str, Any], li
             raise HTTPException(status_code=400, detail={"error": "invalid JSON body"}) from exc
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail={"error": "JSON body must be an object"})
-        return _payload_from_fields(body), _json_image_sources(body), _json_mask_sources(body)
+        return _payload_from_fields(body), json_image_sources(body), _json_mask_sources(body)
 
     form = await request.form()
     fields: dict[str, Any] = {}

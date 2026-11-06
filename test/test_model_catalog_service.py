@@ -109,16 +109,15 @@ class ModelCatalogServiceTests(unittest.TestCase):
     def test_catalog_unions_every_active_account_without_plan_shortcut(self) -> None:
         result = self.catalog.list_models()
         self.assertEqual([item["id"] for item in result["data"]],
-                         ["anon", "free-a-only", "free-b-only", "plus-only", "pro-only", "shared"])
-        self.assertCountEqual(self.calls, [("web", token) for token in self.outcomes]
-                              + [("codex", token) for token in self.outcomes if token])
+                         ["free-a-only", "free-b-only", "plus-only", "pro-only", "shared"])
+        self.assertCountEqual(self.calls, [("web", token) for token in self.outcomes if token])
         self.assertCountEqual(self.closed, self.calls)
         route = self.catalog.route_for_model("free-b-only")
         self.assertEqual(route.account_ids, frozenset({self.account_id("free-b")}))
         self.assertFalse(route.allow_anonymous)
         shared = self.catalog.route_for_model("shared")
         self.assertEqual(shared.account_ids, frozenset(self.account_id(t) for t in ("free-a", "free-b", "plus")))
-        self.assertTrue(shared.allow_anonymous)
+        self.assertFalse(shared.allow_anonymous)
 
     def test_ttl_cache_and_force_refresh(self) -> None:
         self.catalog.list_models()
@@ -126,16 +125,16 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.catalog.list_models()
         self.catalog.route_for_model("pro-only")
         self.assertEqual(self.calls.count(("web", "pro")), 1)
-        self.assertEqual(self.calls.count(("codex", "pro")), 1)
+        self.assertEqual(self.calls.count(("codex", "pro")), 0)
         self.catalog.list_models(force_refresh=True)
         self.assertEqual(self.calls.count(("web", "pro")), 2)
-        self.assertEqual(self.calls.count(("codex", "pro")), 2)
+        self.assertEqual(self.calls.count(("codex", "pro")), 0)
         self.now += 301
         stale = self.catalog.list_models()
         self.assertIn("pro-only", {item["id"] for item in stale["data"]})
         self.assertTrue(self.catalog.wait_for_refresh(timeout=5))
         self.assertEqual(self.calls.count(("web", "pro")), 3)
-        self.assertEqual(self.calls.count(("codex", "pro")), 3)
+        self.assertEqual(self.calls.count(("codex", "pro")), 0)
 
     def test_expired_cache_returns_immediately_while_one_background_refresh_runs(self) -> None:
         self.catalog.list_models()
@@ -157,8 +156,8 @@ class ModelCatalogServiceTests(unittest.TestCase):
         finally:
             self.release_fetches.set()
         self.assertTrue(self.catalog.wait_for_refresh(timeout=5))
-        # 卡住期间的多次读取只触发一批刷新：4 个账号 × 2 个渠道 + 匿名源。
-        self.assertEqual(len(self.calls) - baseline, 9)
+        # 卡住期间的多次读取只触发一批刷新，每个账号只查对应通道。
+        self.assertEqual(len(self.calls) - baseline, 4)
         self.assertIn("pro-new", {item["id"] for item in self.catalog.list_models()["data"]})
 
     def test_refresh_deadline_stops_waiting_for_stuck_sources_and_keeps_cache(self) -> None:
@@ -194,7 +193,7 @@ class ModelCatalogServiceTests(unittest.TestCase):
         finally:
             self.release_fetches.set()
         self.assertTrue(all(result == results[0] for result in results))
-        self.assertEqual(len(self.calls), 19)
+        self.assertEqual(len(self.calls), 9)
         self.assertLessEqual(self.maximum_fetches, 4)
         self.assertEqual(len(set(self.calls)), len(self.calls))
 
@@ -263,7 +262,7 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.assertIn("pro-only", {item["id"] for item in result["data"]})
         self.assertEqual(self.catalog.route_for_model("pro-only").account_ids, frozenset({previous_id}))
         self.assertIn(("web", "pro-rotated"), self.calls)
-        self.assertIn(("codex", "pro-rotated"), self.calls)
+        self.assertNotIn(("codex", "pro-rotated"), self.calls)
         reloaded = AccountService(self.accounts.storage)
         self.assertEqual(reloaded.get_account("pro-rotated")["pool_account_id"], previous_id)
 
@@ -280,8 +279,8 @@ class ModelCatalogServiceTests(unittest.TestCase):
     def test_sync_metadata_errors_and_logs_never_include_credentials(self) -> None:
         initial = self.catalog.get_catalog()
         self.assertEqual(initial["sync"]["status"], "success")
-        self.assertEqual(initial["sync"]["source_count"], 9)
-        self.assertEqual(initial["sync"]["successful_sources"], 9)
+        self.assertEqual(initial["sync"]["source_count"], 4)
+        self.assertEqual(initial["sync"]["successful_sources"], 4)
         self.assertIsNotNone(initial["sync"]["last_success_at"])
         self.assertEqual(initial["sync"]["errors"], [])
         for token in list(self.outcomes):
@@ -322,6 +321,7 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.assertEqual(self.catalog.route_for_model("pro-only").account_ids, frozenset())
 
     def test_same_model_across_channels_deduplicates_without_merging_permissions(self) -> None:
+        self.accounts.update_account("free-b", {"source_type": "codex"}, quiet=True)
         self.codex_outcomes["free-b"] = model_list("free-a-only", "gpt.official-codex")
         result = self.catalog.get_catalog()
         matches = [item for item in result["data"] if item["id"] == "free-a-only"]
@@ -338,15 +338,53 @@ class ModelCatalogServiceTests(unittest.TestCase):
         public = self.catalog.list_models()
         self.assertTrue(all("channels" not in item and "source" not in item for item in public["data"]))
 
-    def test_web_account_attempts_codex_models_without_source_type_shortcut(self) -> None:
+    def test_web_account_does_not_load_codex_models(self) -> None:
         self.accounts.update_account("free-a", {"source_type": "web"}, quiet=True)
         self.codex_outcomes["free-a"] = model_list("official-codex-model")
         result = self.catalog.get_catalog()
-        model = next(item for item in result["data"] if item["id"] == "official-codex-model")
-        self.assertEqual(model["channels"], ["codex"])
-        self.assertIn(("codex", "free-a"), self.calls)
+        self.assertNotIn("official-codex-model", {item["id"] for item in result["data"]})
+        self.assertNotIn(("codex", "free-a"), self.calls)
+        self.assertFalse(self.catalog.route_for_model("official-codex-model").account_ids)
 
-    def test_each_account_refreshes_token_once_for_both_channels(self) -> None:
+    def test_web_login_sources_keep_web_models_without_codex_discovery(self) -> None:
+        self.catalog.list_models()
+        for source in ("password", "oauth_login"):
+            self.accounts.update_account("pro", {"source_type": source}, quiet=True)
+            self.codex_outcomes["pro"] = model_list("gpt-6-luna")
+            result = self.catalog.list_models()
+            self.assertIn("pro-only", {item["id"] for item in result["data"]})
+            self.assertNotIn("gpt-6-luna", {item["id"] for item in result["data"]})
+            self.assertNotIn(("codex", "pro"), self.calls)
+
+    def test_codex_only_import_loads_only_codex_models(self) -> None:
+        self.accounts.delete_accounts([a["access_token"] for a in self.accounts.list_accounts()])
+        self.accounts.add_account_items([{"access_token": "codex-only", "source_type": "codex"}])
+        self.outcomes["codex-only"] = model_list("wrong-web-model")
+        self.codex_outcomes["codex-only"] = model_list("gpt-6-luna")
+        result = self.catalog.get_catalog()
+        self.assertEqual([item["id"] for item in result["data"]], ["gpt-6-luna"])
+        self.assertEqual(self.calls, [("codex", "codex-only")])
+        self.assertEqual(result["data"][0]["channels"], ["codex"])
+
+    def test_no_imported_accounts_produces_no_text_models(self) -> None:
+        self.catalog.list_models()
+        self.accounts.delete_accounts([a["access_token"] for a in self.accounts.list_accounts()])
+        self.calls.clear()
+        self.assertEqual(self.catalog.list_models()["data"], [])
+        self.assertEqual(self.calls, [])
+        self.assertFalse(self.catalog.route_for_model("anon").allow_anonymous)
+
+    def test_source_change_discards_old_channel_even_if_new_fetch_fails(self) -> None:
+        self.accounts.update_account("pro", {"source_type": "codex"}, quiet=True)
+        self.codex_outcomes["pro"] = model_list("gpt-6-luna")
+        self.catalog.list_models()
+        self.assertTrue(self.catalog.route_for_model("gpt-6-luna").codex_account_ids)
+        self.accounts.update_account("pro", {"source_type": "web"}, quiet=True)
+        self.outcomes["pro"] = RuntimeError("temporary failure")
+        self.assertNotIn("gpt-6-luna", {item["id"] for item in self.catalog.list_models()["data"]})
+        self.assertFalse(self.catalog.route_for_model("gpt-6-luna").account_ids)
+
+    def test_each_account_refreshes_token_once_for_its_channel(self) -> None:
         with mock.patch.object(self.accounts, "refresh_access_token", side_effect=lambda token, **_kwargs: token) as refresh:
             self.catalog.get_catalog()
         self.assertEqual(refresh.call_count, 4)
@@ -354,6 +392,7 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs == {"event": "model_catalog_sync"} for call in refresh.call_args_list))
 
     def test_model_map_does_not_copy_internal_upstream_fields_into_responses(self) -> None:
+        self.accounts.update_account("pro", {"source_type": "codex"}, quiet=True)
         self.codex_outcomes["pro"] = {"data": [{
             **model_list("official-codex-model")["data"][0],
             "display_name": "Public model", "instructions": "private-prompt",
@@ -367,24 +406,25 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.assertNotIn("access_token", model)
 
     def test_channel_failure_preserves_only_that_channel_cache_while_other_updates(self) -> None:
+        self.accounts.update_account("pro", {"source_type": "codex"}, quiet=True)
         self.codex_outcomes["pro"] = model_list("codex-previous")
         initial = self.catalog.get_catalog()
-        self.outcomes["pro"] = model_list("web-replacement")
+        self.outcomes["plus"] = model_list("web-replacement")
         self.codex_outcomes["pro"] = RuntimeError("private token inside error")
         result = self.catalog.get_catalog(force_refresh=True)
         ids = {item["id"] for item in result["data"]}
-        self.assertNotIn("pro-only", ids)
+        self.assertNotIn("plus-only", ids)
         self.assertIn("web-replacement", ids)
         self.assertIn("codex-previous", ids)
         self.assertEqual(result["sync"]["status"], "partial")
-        self.assertEqual(result["sync"]["successful_sources"], 8)
+        self.assertEqual(result["sync"]["successful_sources"], 3)
         self.assertEqual(result["sync"]["last_success_at"], initial["sync"]["last_success_at"])
         self.assertEqual(len(result["sync"]["errors"]), 1)
         self.assertEqual(result["sync"]["errors"][0]["channel"], "codex")
         self.assertEqual(result["sync"]["errors"][0]["account_id"], self.account_id("pro"))
         self.assertEqual(self.catalog.route_for_model("codex-previous").account_ids_for_channel("web"), frozenset())
 
-        self.outcomes["pro"] = RuntimeError("web unavailable")
+        self.outcomes["plus"] = RuntimeError("web unavailable")
         self.codex_outcomes["pro"] = model_list("codex-replacement")
         result = self.catalog.get_catalog(force_refresh=True)
         ids = {item["id"] for item in result["data"]}
@@ -394,6 +434,7 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.assertEqual(result["sync"]["errors"][0]["channel"], "web")
 
     def test_codex_permission_survives_token_rotation_and_transient_failure(self) -> None:
+        self.accounts.update_account("pro", {"source_type": "codex"}, quiet=True)
         self.codex_outcomes["pro"] = model_list("official-codex-model")
         self.catalog.list_models()
         previous_id = self.account_id("pro")
@@ -407,9 +448,10 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.assertEqual(route.account_ids_for_channel("web"), frozenset())
 
     def test_invalid_codex_response_preserves_prior_codex_and_current_web_models(self) -> None:
+        self.accounts.update_account("pro", {"source_type": "codex"}, quiet=True)
         self.codex_outcomes["pro"] = model_list("official-codex-model")
         self.catalog.list_models()
-        self.outcomes["pro"] = model_list("updated-web-model")
+        self.outcomes["plus"] = model_list("updated-web-model")
         for malformed in ({"unexpected": []}, {"data": None}, []):
             with self.subTest(malformed=malformed):
                 self.codex_outcomes["pro"] = malformed
@@ -420,18 +462,18 @@ class ModelCatalogServiceTests(unittest.TestCase):
                 self.assertEqual(result["sync"]["errors"][0]["channel"], "codex")
 
     def test_codex_failure_without_permission_keeps_real_web_catalog(self) -> None:
-        # An account whose Codex endpoint rejects access contributes only its
-        # successful web catalog; no Codex IDs are synthesized as a fallback.
-        for token in self.codex_outcomes:
-            self.codex_outcomes[token] = RuntimeError("upstream rejected Codex access")
+        self.accounts.update_account("pro", {"source_type": "codex"}, quiet=True)
+        self.codex_outcomes["pro"] = RuntimeError("upstream rejected Codex access")
         result = self.catalog.get_catalog()
         self.assertEqual(result["sync"]["status"], "partial")
-        self.assertEqual(result["sync"]["successful_sources"], 5)
+        self.assertEqual(result["sync"]["successful_sources"], 3)
         self.assertTrue(all(item["channels"] == ["web"] for item in result["data"]))
-        self.assertEqual(len(result["sync"]["errors"]), 4)
-        self.assertTrue(all(error["channel"] == "codex" for error in result["sync"]["errors"]))
+        self.assertEqual(len(result["sync"]["errors"]), 1)
+        self.assertEqual(result["sync"]["errors"][0]["channel"], "codex")
+        self.assertNotIn(("web", "pro"), self.calls)
 
     def test_disabled_during_sync_cannot_reintroduce_codex_permissions(self) -> None:
+        self.accounts.update_account("free-a", {"source_type": "codex"}, quiet=True)
         self.codex_outcomes["free-a"] = model_list("codex-in-flight")
         self.release_fetches.clear()
         try:

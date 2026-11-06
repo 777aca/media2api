@@ -6,7 +6,7 @@ import io
 import json
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from urllib.parse import quote, urlencode, urlparse
@@ -20,6 +20,7 @@ from services.config import DATA_DIR, config
 IMAGE_INDEX_FILE = DATA_DIR / "image_index.json"
 IMAGE_INDEX_LOCK = Lock()
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+IMAGE_TIMEZONE = timezone(timedelta(hours=8))
 
 
 class ImageStorageError(RuntimeError):
@@ -39,7 +40,27 @@ def _clean(value: object) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(time.time(), IMAGE_TIMEZONE).isoformat(sep=" ", timespec="seconds")
+
+
+def _image_instant(rel: str, created_at: object = None, modified_at: float | None = None) -> datetime | None:
+    """Recover old image times without relying on the storage directory's date."""
+    try:
+        parsed = datetime.fromisoformat(str(created_at))
+    except ValueError:
+        parsed = None
+    if parsed is not None and parsed.tzinfo is not None:
+        return parsed.astimezone(IMAGE_TIMEZONE)
+    # Generated filenames preserve Unix seconds even for old remote-only images.
+    prefix, separator, _ = Path(rel).name.partition("_")
+    if separator and len(prefix) == 10 and prefix.isdigit():
+        return datetime.fromtimestamp(int(prefix), IMAGE_TIMEZONE)
+    if parsed is not None:
+        # Legacy timestamps without a filename epoch used the server's local zone.
+        return parsed.astimezone(IMAGE_TIMEZONE)
+    if modified_at is not None:
+        return datetime.fromtimestamp(modified_at, IMAGE_TIMEZONE)
+    return None
 
 
 def _utc_now() -> datetime:
@@ -426,13 +447,14 @@ class ImageStorageService:
         remote_kind = "s3" if stored_s3 else ("webdav" if stored_webdav else "")
         storage_label = "both" if stored_local and remote_kind else (remote_kind or "local")
         dimensions = _image_dimensions(image_data)
+        created_at = _now_iso()
         item = {
             "rel": rel,
             "path": rel,
             "name": Path(rel).name,
-            "date": "-".join(rel.split("/")[:3]),
+            "date": created_at[:10],
             "size": len(image_data),
-            "created_at": _now_iso(),
+            "created_at": created_at,
             "storage": storage_label,
             "local": stored_local,
             "webdav": stored_webdav,
@@ -490,13 +512,14 @@ class ImageStorageService:
                     dimensions = _image_dimensions(path.read_bytes())
                 except Exception:
                     dimensions = None
+                instant = _image_instant(rel, modified_at=path.stat().st_mtime)
                 indexed[rel] = {
                     "rel": rel,
                     "path": rel,
                     "name": path.name,
-                    "date": "-".join(rel.split("/")[:3]) if len(rel.split("/")) >= 4 else datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d"),
+                    "date": instant.strftime("%Y-%m-%d"),
                     "size": path.stat().st_size,
-                    "created_at": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                    "created_at": instant.isoformat(sep=" ", timespec="seconds"),
                     "storage": "local",
                     "local": True,
                     "webdav": False,
@@ -528,13 +551,16 @@ class ImageStorageService:
                     }
                     indexed[rel] = item
                     changed = True
-                day = str(item.get("date") or "")
+                instant = _image_instant(rel, item.get("created_at"))
+                day = instant.strftime("%Y-%m-%d") if instant else str(item.get("date") or "")
                 if start_date and day < start_date:
                     continue
                 if end_date and day > end_date:
                     continue
                 items.append({
                     **item,
+                    "date": day,
+                    "created_at": instant.strftime("%Y-%m-%d %H:%M:%S") if instant else item.get("created_at", ""),
                     "rel": rel,
                     "path": rel,
                     "url": self._public_url(rel, base_url),
@@ -595,14 +621,15 @@ class ImageStorageService:
                     payload = path.read_bytes()
                     remote_url = client.put(rel, payload)
                     dimensions = _image_dimensions(payload)
+                    instant = _image_instant(rel, item.get("created_at"), path.stat().st_mtime)
                     items[rel] = {
                         **item,
                         "rel": rel,
                         "path": rel,
                         "name": path.name,
-                        "date": "-".join(rel.split("/")[:3]) if len(rel.split("/")) >= 4 else datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d"),
+                        "date": instant.strftime("%Y-%m-%d"),
                         "size": len(payload),
-                        "created_at": str(item.get("created_at") or datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")),
+                        "created_at": instant.isoformat(sep=" ", timespec="seconds"),
                         "storage": "both",
                         "local": True,
                         "webdav": bool(item.get("webdav")) or remote_flag == "webdav",

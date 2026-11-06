@@ -154,6 +154,53 @@ class GenerationAPITests(unittest.TestCase):
         self.assertEqual(detail["outcome"], "error")
         self.assertEqual(len(attempts), 2)
 
+    def test_generations_preserves_reference_images_through_queue(self):
+        received = []
+        execute = self.runtime.execute
+
+        def capture(request, index, total, row):
+            received.append(request.images)
+            return execute(request, index, total, row)
+
+        self.runtime.execute = capture
+        second = BytesIO()
+        Image.new("RGB", (16, 16), "blue").save(second, format="PNG")
+        second_b64 = base64.b64encode(second.getvalue()).decode()
+        for stream in (False, True):
+            for field in ("images", "image", "image_url"):
+                with self.subTest(stream=stream, field=field):
+                    response = self.client.post("/v1/images/generations", headers=self.admin, json={
+                        "prompt": "Keep the first product, use the second background",
+                        field: ["data:image/png;base64," + self.png, {"b64_json": second_b64}],
+                        "stream": stream,
+                    })
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(received[-1], [self.png, second_b64])
+                    job_id = response.headers["X-Image-Task-Id"]
+                    inputs = json.loads((self.root / "generation-tasks" / job_id / "inputs.json").read_text())
+                    self.assertEqual(inputs["images"], [self.png, second_b64])
+
+    def test_generations_rejects_invalid_references_before_queue_admission(self):
+        for images in ([], "", "not-base64!", {"file_id": "unsupported"}, 123):
+            with self.subTest(images=images):
+                response = self.client.post("/v1/images/generations", headers=self.admin,
+                                            json={"prompt": "draw", "images": images})
+                self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.runtime.store.rows("SELECT id FROM jobs"), [])
+
+    def test_generations_idempotency_includes_reference_images(self):
+        headers = {**self.admin, "Idempotency-Key": "same-prompt-different-image"}
+        body = {"prompt": "draw", "images": [self.png]}
+        first = self.client.post("/v1/images/generations", headers=headers, json=body)
+        self.assertEqual(first.status_code, 200, first.text)
+        duplicate = self.client.post("/v1/images/generations", headers=headers, json=body)
+        self.assertEqual(duplicate.headers["X-Image-Task-Id"], first.headers["X-Image-Task-Id"])
+        changed = self.client.post("/v1/images/generations", headers=headers,
+                                   json={**body, "images": [self.png, self.png]})
+        self.assertEqual(changed.status_code, 409, changed.text)
+        self.assertEqual(len(self.calls), 1)
+
     def test_single_image_protocols_discard_upstream_extras_before_logging_and_charging(self):
         from services.protocol import conversation
 

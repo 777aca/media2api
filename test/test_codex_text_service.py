@@ -9,7 +9,7 @@ from services.codex_text_service import (
     CodexTextBackend, CodexTextError, build_codex_text_payload, codex_text_deltas, iter_codex_sse_events,
 )
 from services.protocol import conversation
-from services.model_service import ModelRoute
+from services.model_service import ModelRoute, ModelUnavailableError
 
 
 def completed(text: str) -> dict[str, object]:
@@ -174,7 +174,7 @@ class CodexTextTransportTests(unittest.TestCase):
         response.close.assert_called_once()
 
     def test_http_failure_does_not_read_or_expose_upstream_body(self) -> None:
-        for status, code in ((401, "token_invalidated"), (403, "upstream_http_403"), (429, "upstream_rate_limit"), (500, "upstream_http_500")):
+        for status, code in ((401, "upstream_authentication_failed"), (403, "upstream_http_403"), (429, "upstream_rate_limit"), (500, "upstream_http_500")):
             backend, _transport, response = self.make_backend(status=status)
             response.text = "access-token-secret"
             with mock.patch.object(codex_text_service, "codex_headers", return_value={}), \
@@ -204,6 +204,23 @@ class CodexTextTransportTests(unittest.TestCase):
 
 
 class CodexTextProtocolTests(unittest.TestCase):
+    def test_exhausted_accounts_preserve_original_codex_authentication_error(self) -> None:
+        backend = CodexTextBackend("rejected-token")
+        request = conversation.ConversationRequest(model="gpt-6-luna", prompt="hi")
+        for message, code in (("Codex authentication rejected (HTTP 401).", "upstream_authentication_failed"),
+                              ("The upstream authentication token has been invalidated.", "token_invalidated")):
+            original = CodexTextError(message, code)
+            with mock.patch.object(CodexTextBackend, "iter_text_deltas", side_effect=original), \
+                    mock.patch.object(conversation.account_service, "refresh_access_token", return_value="rejected-token") as refresh, \
+                    mock.patch.object(conversation.account_service, "_record_invalid_token_seen"), \
+                    mock.patch.object(conversation.account_service, "get_text_access_token",
+                                      side_effect=ModelUnavailableError("no eligible accounts")) as select:
+                with self.assertRaises(CodexTextError) as caught:
+                    list(conversation.stream_text_deltas(backend, request))
+            self.assertIs(caught.exception, original)
+            refresh.assert_called_once()
+            select.assert_called_once_with(excluded_tokens={"rejected-token"}, model="gpt-6-luna", channel="codex")
+
     def test_codex_only_model_selects_confirmed_codex_account_and_lazy_backend(self) -> None:
         route = ModelRoute(account_ids=frozenset({"account-id"}), web_account_ids=frozenset(),
                            codex_account_ids=frozenset({"account-id"}))

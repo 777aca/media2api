@@ -18,7 +18,7 @@ from services.codex_text_service import CodexTextBackend
 from services.image_storage_service import image_storage_service
 from services.image_calibration import calibrate_image
 from services.image_resolution import validate_image_size
-from services.model_service import model_catalog_service
+from services.model_service import ModelUnavailableError, model_catalog_service
 from services.openai_backend_api import ImageContentPolicyError, ImagePollTimeoutError, OpenAIBackendAPI
 from utils.helper import (
     IMAGE_MODELS,
@@ -813,7 +813,8 @@ def stream_text_deltas(backend: OpenAIBackendAPI | CodexTextBackend, request: Co
             return
         except Exception as exc:
             error_message = str(exc)
-            if token and not emitted and is_token_invalid_error(error_message):
+            auth_rejected = codex_channel and getattr(exc, "code", None) == "upstream_authentication_failed"
+            if token and not emitted and (is_token_invalid_error(error_message) or auth_rejected):
                 refreshed_token = account_service.refresh_access_token(token, force=True, event="text_stream")
                 if refreshed_token and refreshed_token != token and refreshed_token not in attempted_tokens:
                     token = refreshed_token
@@ -824,7 +825,12 @@ def stream_text_deltas(backend: OpenAIBackendAPI | CodexTextBackend, request: Co
                     selection = {"excluded_tokens": set(attempted_tokens), "model": request.model}
                     if codex_channel:
                         selection["channel"] = "codex"
-                    token = account_service.get_text_access_token(**selection)
+                    try:
+                        token = account_service.get_text_access_token(**selection)
+                    except ModelUnavailableError:
+                        # Exhausting retry candidates does not mean the model was absent.
+                        # Keep the sanitized upstream authentication failure for diagnosis.
+                        raise exc from None
                 if token:
                     continue
             raise

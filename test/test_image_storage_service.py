@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import tempfile
+import json
+import os
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -104,6 +107,47 @@ class ImageStorageServiceTests(unittest.TestCase):
 
     def service(self) -> ImageStorageService:
         return ImageStorageService(self.data_dir / "image_index.json")
+
+    def test_new_image_time_is_stored_with_utc8_offset(self):
+        instant = datetime.fromisoformat("2026-11-05T16:00:01+00:00").timestamp()
+        service = self.service()
+        with mock.patch("services.image_storage_service.time.time", return_value=instant):
+            stored = service.save(png_bytes())
+        index = json.loads((self.data_dir / "image_index.json").read_text())
+        self.assertEqual(index["items"][stored.rel]["created_at"], "2026-11-06 00:00:01+08:00")
+        self.assertEqual(index["items"][stored.rel]["date"], "2026-11-06")
+
+    def test_legacy_remote_images_filter_and_sort_by_utc8_not_directory_date(self):
+        service = self.service()
+        before = int(datetime.fromisoformat("2026-11-05T15:59:59Z").timestamp())
+        after = before + 1
+        paths = [f"2026/11/05/{instant}_abc.png" for instant in (before, after)]
+        index = {rel: {"date": "2026-11-05", "created_at": stamp, "s3": True,
+                       "local": False, "storage": "s3"}
+                 for rel, stamp in zip(paths, ["2026-11-05 15:59:59", "2026-11-05 16:00:00"])}
+        index_path = self.data_dir / "image_index.json"
+        index_path.write_text(json.dumps({"items": index}))
+        original = index_path.read_bytes()
+        items = service.list_items("http://app.test", "2026-11-06", "2026-11-06")
+        self.assertEqual([item["rel"] for item in items], [paths[1]])
+        self.assertEqual(items[0]["created_at"], "2026-11-06 00:00:00")
+        self.assertEqual(items[0]["date"], "2026-11-06")
+        self.assertEqual([item["rel"] for item in service.list_items("http://app.test")], paths[::-1])
+        self.assertEqual(index_path.read_bytes(), original)
+
+    def test_explicit_offset_is_converted_and_unindexed_file_uses_mtime(self):
+        service = self.service()
+        index = {"remote.png": {"date": "2026-11-05", "created_at": "2026-11-05T17:00:00Z",
+                                "s3": True, "local": False, "storage": "s3"}}
+        (self.data_dir / "image_index.json").write_text(json.dumps({"items": index}))
+        self.images_dir.mkdir()
+        path = self.images_dir / "imported.png"
+        path.write_bytes(png_bytes())
+        instant = datetime.fromisoformat("2026-11-05T16:00:00Z").timestamp()
+        os.utime(path, (instant, instant))
+        items = service.list_items("http://app.test", "2026-11-06", "2026-11-06")
+        self.assertEqual([item["created_at"] for item in items],
+                         ["2026-11-06 01:00:00", "2026-11-06 00:00:00"])
 
     def test_local_mode_saves_to_local_directory(self):
         stored = self.service().save(png_bytes(), "http://app.test")

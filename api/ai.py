@@ -5,7 +5,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from api.image_inputs import parse_image_edit_request, read_image_sources
+from api.image_inputs import json_image_sources, parse_image_edit_request, read_image_sources
 from api.request_logging import read_request_parameters
 from api.support import require_admin, require_identity, resolve_image_base_url
 from services.content_filter import check_request, request_shape, request_text
@@ -32,6 +32,9 @@ class ImageGenerationRequest(BaseModel):
     response_format: str = "b64_json"
     history_disabled: bool = True
     stream: bool | None = None
+    image: object | None = None
+    images: object | None = None
+    image_url: object | None = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -128,9 +131,17 @@ def create_router() -> APIRouter:
         identity = require_identity(authorization)
         payload = body.model_dump(mode="python")
         payload["base_url"] = resolve_image_base_url(request)
-        call = LoggedCall(identity, "/v1/images/generations", body.model, "文生图", request_text=body.prompt,
+        has_images = any(payload.get(key) is not None for key in ("images", "image", "image_url"))
+        call = LoggedCall(identity, "/v1/images/generations", body.model, "图生图" if has_images else "文生图", request_text=body.prompt,
                           idempotency_key=request.headers.get("Idempotency-Key", ""), request_params=await read_request_parameters(request))
         await filter_or_log(call, body.prompt)
+        if has_images:
+            try:
+                payload["images"] = await read_image_sources(json_image_sources(payload))
+            except HTTPException as exc:
+                call.log("调用失败", status="failed", error=str(exc.detail))
+                raise
+            return await call.run(openai_v1_image_edit.handle, payload)
         return await call.run(openai_v1_image_generations.handle, payload)
 
     @router.post("/v1/images/edits")
