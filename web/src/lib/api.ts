@@ -376,6 +376,14 @@ export async function syncModelCatalog() {
   }));
 }
 
+export async function fetchTextModelCatalog() {
+  return parseModelCatalogResponse(await httpRequest<unknown>("/api/text-models"));
+}
+
+export async function syncTextModelCatalog() {
+  return parseModelCatalogResponse(await httpRequest<unknown>("/api/text-models/sync", { method: "POST", body: {} }));
+}
+
 export async function createAccounts(tokens: string[], accounts: AccountImportPayload[] = []) {
   return httpRequest<AccountMutationResponse>("/api/accounts", {
     method: "POST",

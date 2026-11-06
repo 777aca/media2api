@@ -7,6 +7,13 @@ const openai: Account[] = [
   { access_token: "same-id", type: "Plus", email: "alice@example.test", status: "正常", quota: 4, success: 0, fail: 0 },
   { access_token: "codex-test", type: "Free", source_type: " CODEX ", email: "bob@example.test", status: "异常", quota: 0, success: 0, fail: 0 },
 ];
+
+test("Grok request counts accept only nonnegative integers and default old responses to zero", () => {
+  for (const [value, expected] of [[3, 3], [0, 0], [undefined, 0], [-1, 0], [1.5, 0], ["2", 0], [Infinity, 0]] as const) {
+    const [account] = parseGrokAccounts({ items: [{ id: "synthetic", request_inflight: value }] });
+    assert.equal(account.requestInflight, expected);
+  }
+});
 const grok = parseGrokAccounts({ items: [
   { id: "same-id", name: "Video studio", email: "grok@example.test", tier: "heavy", enabled: true, status: "active", quotas: { video: { remaining: 0 } } },
   { id: "disabled", name: "Paused", enabled: false, status: "reauth_required" },

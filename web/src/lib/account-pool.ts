@@ -10,6 +10,7 @@ export type GrokAccount = {
   tier: string;
   cooldownUntil: number;
   createdAt: number;
+  requestInflight: number;
   quotas: Record<string, { remaining: number | null }>;
 };
 
@@ -25,6 +26,7 @@ export function parseGrokAccounts(value: unknown): GrokAccount[] {
       tier: typeof a.tier === "string" ? a.tier : "auto",
       cooldownUntil: typeof a.cooldown_until === "number" ? a.cooldown_until : 0,
       createdAt: typeof a.created_at === "number" ? a.created_at : 0,
+      requestInflight: typeof a.request_inflight === "number" && Number.isSafeInteger(a.request_inflight) && a.request_inflight >= 0 ? a.request_inflight : 0,
       quotas: Object.fromEntries(Object.entries(record(a.quotas)).map(([key, value]) => {
         const remaining = record(value).remaining;
         return [key, { remaining: typeof remaining === "number" && Number.isFinite(remaining) ? remaining : null }];

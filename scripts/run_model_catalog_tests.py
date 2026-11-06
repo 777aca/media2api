@@ -19,10 +19,12 @@ import unittest
 
 
 DEFAULT_TESTS = [
+    "test.test_quota_alerts",
     "test.test_model_catalog_service",
     "test.test_text_model_routing",
     "test.test_account_identity",
     "test.test_models_api",
+    "test.test_public_model_catalog",
     "test.test_model_catalog_protocol",
     "test.test_model_backend_parser",
     "test.test_codex_client",

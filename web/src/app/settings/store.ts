@@ -429,6 +429,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
             : "local";
       const data = await updateSettingsConfig({
         ...config,
+        // Managed by its own form; the shared snapshot can be stale after an alert save.
+        quota_alerts: undefined,
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
         image_retention_days: undefined,
         image_retention_hours: parseImageRetentionHours(config.image_retention_hours),

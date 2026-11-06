@@ -17,6 +17,7 @@ import { ImageQueueSettings } from "./components/image-queue-settings";
 import { UserKeysCard } from "./components/user-keys-card";
 import { useSettingsStore } from "./store";
 import { GrokSettings } from "@/components/grok-settings";
+import { QuotaAlertSettingsCard } from "./components/quota-alert-settings";
 
 const settingsTabs = [
   { value: "basic", title: "号池维护" },
@@ -69,8 +70,9 @@ function SettingsPageContent() {
             ))}
           </TabsList>
         </div>
-        <TabsContent value="basic">
+        <TabsContent value="basic" className="space-y-4">
           <ConfigCard />
+          <QuotaAlertSettingsCard />
         </TabsContent>
         <TabsContent value="proxy" className="space-y-4">
           <ProxySettingsCard />

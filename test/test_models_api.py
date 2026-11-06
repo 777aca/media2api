@@ -90,6 +90,25 @@ class ModelsApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertNotIn("private-", response.text)
 
+    def test_text_catalog_requires_admin_and_passes_refresh_flag(self) -> None:
+        with mock.patch.object(ai_module.openai_v1_models, "get_text_catalog", create=True, return_value=self.catalog) as text_catalog:
+            for method, path, force in ((self.client.get, "/api/text-models", False),
+                                         (self.client.post, "/api/text-models/sync", True)):
+                self.assertEqual(method(path).status_code, 401)
+                self.assertEqual(method(path, headers={"Authorization": "Bearer test-user-key"}).status_code, 403)
+                result = method(path, headers={"Authorization": "Bearer test-admin-key"})
+                self.assertEqual(result.status_code, 200)
+                self.assertEqual(result.json(), self.catalog)
+                text_catalog.assert_called_with(force_refresh=force)
+            self.get_catalog.assert_not_called()
+
+    def test_text_catalog_failure_is_redacted(self) -> None:
+        with mock.patch.object(ai_module.openai_v1_models, "get_text_catalog", create=True,
+                               side_effect=RuntimeError("private-access-token")):
+            response = self.client.get("/api/text-models", headers={"Authorization": "Bearer test-admin-key"})
+            self.assertEqual(response.status_code, 502)
+            self.assertNotIn("private-", response.text)
+
 
 if __name__ == "__main__":
     unittest.main()

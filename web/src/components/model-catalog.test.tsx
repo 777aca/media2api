@@ -109,3 +109,36 @@ describe("本地图片模型目录", () => {
     }
   });
 });
+
+describe("号池文本模型目录", () => {
+  it("显示原始 ID、显示名称和实际通道，不标成图片入口", () => {
+    const value = state({ catalog: catalog({ data: [
+      { ...model("gpt-text-test"), source: "official", channels: ["web", "codex"], display_name: "Text Test" },
+      { ...model("grok-chat-fast"), source: "grok_web", channels: ["grok_web"], capabilities: ["chat"] },
+    ] }) });
+    const text = renderToStaticMarkup(<ModelCatalog state={value} kind="text" />).replace(/<[^>]*>/g, "");
+    assert.match(text, /可用文本模型 \(2\)/);
+    assert.match(text, /gpt-text-test/);
+    assert.match(text, /Text Test/);
+    assert.match(text, /ChatGPT/);
+    assert.match(text, /Codex/);
+    assert.match(text, /Grok/);
+    assert.doesNotMatch(text, /项目图片兼容入口|图片目录|网页生图/);
+  });
+
+  it("鉴权失败明确提示更新凭据，不误报账号为空或泄漏内部标识", () => {
+    const value = state({ catalog: catalog({ data: [], sync: {
+      ...catalog().sync, status: "failed", last_success_at: null, successful_sources: 0,
+      errors: [{ account_id: "synthetic-private-id", source: "account", code: "upstream_http_401" }],
+    } }) });
+    const text = renderToStaticMarkup(<ModelCatalog state={value} kind="text" />).replace(/<[^>]*>/g, "");
+    assert.match(text, /账号认证失败/);
+    assert.match(text, /更新.*凭据/);
+    assert.doesNotMatch(text, /synthetic-private-id|暂无可用文本模型/);
+  });
+
+  it("空号池提供明确文本模型提示", () => {
+    const text = renderToStaticMarkup(<ModelCatalog state={state({ catalog: catalog({ data: [] }) })} kind="text" />).replace(/<[^>]*>/g, "");
+    assert.match(text, /暂无可用文本模型/);
+  });
+});

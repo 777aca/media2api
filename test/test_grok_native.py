@@ -85,6 +85,18 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(sum(pool.inflight.values()), 0)
         self.assertEqual(sum(pool.users.values()), 0)
 
+    def test_account_list_exposes_live_request_count_without_persisting_it(self):
+        from api.grok_native import create_router
+        route = next(route for route in create_router().routes if route.path == "/api/grok/accounts" and "GET" in route.methods)
+        with patch("api.grok_native.require_admin"):
+            self.assertEqual(route.endpoint()["items"][0]["request_inflight"], 0)
+            with pool.lease("grok-chat-fast", "synthetic-user"):
+                item = route.endpoint()["items"][0]
+                self.assertEqual(item["request_inflight"], 1)
+                self.assertNotIn("sso_token", item)
+                self.assertNotIn("request_inflight", self.store.accounts()[0])
+            self.assertEqual(route.endpoint()["items"][0]["request_inflight"], 0)
+
     def test_lease_does_not_use_disabled_or_exhausted(self):
         self.store.update_account(self.account["id"], {"quotas": {"fast": {"remaining": 0, "reset_at": time.time()+30}}})
         with self.assertRaises(HTTPException): pool.acquire("grok-chat-fast")

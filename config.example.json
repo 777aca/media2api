@@ -1,4 +1,11 @@
 {
+  "quota_alerts": {
+    "enabled": false,
+    "webhook_url": "",
+    "secret": "",
+    "threshold": 3,
+    "repeat_minutes": 60
+  },
   "image_calibration": {
     "enabled": false,
     "worker_url": "http://127.0.0.1:3310",

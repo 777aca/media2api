@@ -114,6 +114,21 @@ def create_router() -> APIRouter:
         except Exception as exc:
             raise HTTPException(status_code=502, detail={"error": "模型目录读取失败，请稍后重试"}) from exc
 
+    async def text_model_catalog(authorization: str | None, *, force_refresh: bool = False):
+        require_admin(authorization)
+        try:
+            return await run_in_threadpool(openai_v1_models.get_text_catalog, force_refresh=force_refresh)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail={"error": "文本模型目录读取失败，请稍后重试"}) from exc
+
+    @router.get("/api/text-models")
+    async def get_text_model_catalog(authorization: str | None = Header(default=None)):
+        return await text_model_catalog(authorization)
+
+    @router.post("/api/text-models/sync")
+    async def sync_text_model_catalog(authorization: str | None = Header(default=None)):
+        return await text_model_catalog(authorization, force_refresh=True)
+
     @router.get("/api/image-models")
     async def list_image_models(authorization: str | None = Header(default=None)):
         require_identity(authorization)

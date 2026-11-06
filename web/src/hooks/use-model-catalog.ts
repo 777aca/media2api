@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { fetchModelCatalog, syncModelCatalog, type ModelCatalogResponse } from "@/lib/api";
+import { fetchModelCatalog, syncModelCatalog, fetchTextModelCatalog, syncTextModelCatalog, type ModelCatalogResponse } from "@/lib/api";
 
-export function useModelCatalog() {
+export function useModelCatalog(kind: "image" | "text" = "image") {
+  const fetchCatalog = kind === "text" ? fetchTextModelCatalog : fetchModelCatalog;
+  const syncCatalog = kind === "text" ? syncTextModelCatalog : syncModelCatalog;
   const [catalog, setCatalog] = useState<ModelCatalogResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -29,7 +31,7 @@ export function useModelCatalog() {
       do {
         repeat.current = false;
         try {
-          const result = await (shouldForce ? syncModelCatalog() : fetchModelCatalog());
+          const result = await (shouldForce ? syncCatalog() : fetchCatalog());
           if (mounted.current) {
             setCatalog(result);
             setError(null);
@@ -37,7 +39,7 @@ export function useModelCatalog() {
         } catch (cause: unknown) {
           if (mounted.current) {
             // 网络或契约错误保留最近目录；后端有效响应则始终采用其账号状态过滤结果。
-            setError(cause instanceof Error ? cause.message : "加载图片目录失败，请稍后重新刷新");
+            setError(cause instanceof Error ? cause.message : "加载模型目录失败，请稍后重新刷新");
           }
         }
         shouldForce = forceNext.current;
@@ -53,15 +55,16 @@ export function useModelCatalog() {
     });
     pending.current = task;
     return task;
-  }, []);
+  }, [fetchCatalog, syncCatalog]);
 
   useEffect(() => {
     mounted.current = true;
-    void load();
+    // 异步启动请求，使加载状态随请求生命周期更新；卸载后 load 会直接返回。
+    void Promise.resolve().then(() => load());
     const checkWhenVisible = () => {
       if (document.visibilityState === "visible") void load();
     };
-    // 仅重新读取本地账号形成的图片目录，不触发上游文本模型同步。
+    // 图片目录读取本地账号；文本目录复用后端缓存与后台过期刷新。
     const interval = window.setInterval(checkWhenVisible, 60_000);
     document.addEventListener("visibilitychange", checkWhenVisible);
     return () => {

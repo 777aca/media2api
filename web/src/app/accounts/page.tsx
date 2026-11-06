@@ -1,10 +1,11 @@
 "use client";
 
 import { clearImageCooldown } from "@/lib/generation-runtime";
-import { GrokAccountRow, grokAccountPath, useGrokAccounts } from "@/components/grok-accounts";
+import { GrokAccountRow, grokAccountPath, useGrokAccounts, fetchGrokActivity } from "@/components/grok-accounts";
+import { AccountActivityBadge, activityRowClass, activityActionClass, mergeActivity, useActivityPolling } from "@/components/account-activity";
 import { channelLabels, filterPoolRows, partitionPoolRows, poolRows, type PoolRow } from "@/lib/account-pool";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import {
   Ban,
@@ -166,6 +167,10 @@ function displayAccountType(account: Account) {
   return account.type || "Free";
 }
 
+async function fetchImageActivity() {
+  return (await fetchAccounts()).items;
+}
+
 function AccountsPageContent() {
   const didLoadRef = useRef(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -180,13 +185,15 @@ function AccountsPageContent() {
     return () => window.clearInterval(timer);
   }, []);
   const modelCatalog = useModelCatalog();
+  const textModelCatalog = useModelCatalog("text");
   const grokRevisionRef = useRef(grok.revision);
   useEffect(() => {
     if (grokRevisionRef.current !== grok.revision) {
       grokRevisionRef.current = grok.revision;
       void modelCatalog.reload();
+      void textModelCatalog.reload();
     }
-  }, [grok.revision, modelCatalog]);
+  }, [grok.revision, modelCatalog, textModelCatalog]);
   const didLoadAccountsRef = useRef(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
@@ -207,6 +214,7 @@ function AccountsPageContent() {
   const [deleteRequest, setDeleteRequest] = useState<{ tokens: string[]; grokIds: string[]; title: string; description: string } | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isRelogining, setIsRelogining] = useState(false);
+  const [isClearingCooldown, setIsClearingCooldown] = useState(false);
   const [progress, setProgress] = useState<{
     visible: boolean;
     current: number;
@@ -226,6 +234,7 @@ function AccountsPageContent() {
   const applyAccountChanges = (items: Account[]) => {
     setAccounts(items);
     void modelCatalog.reload();
+    void textModelCatalog.reload();
   };
 
   const loadAccounts = async (silent = false) => {
@@ -235,7 +244,10 @@ function AccountsPageContent() {
     try {
       const data = await fetchAccounts();
       setAccounts(data.items);
-      if (didLoadAccountsRef.current) void modelCatalog.reload();
+      if (didLoadAccountsRef.current) {
+        void modelCatalog.reload();
+        void textModelCatalog.reload();
+      }
       didLoadAccountsRef.current = true;
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
     } catch (error) {
@@ -279,6 +291,28 @@ function AccountsPageContent() {
   const someCurrentSelected = currentRows.some(isSelected);
   const poolLoading = isLoading || grok.loading;
   const poolBusy = batchBusy || isRefreshing || isDeleting || grok.busy;
+
+  const activityPaused = poolLoading || poolBusy || isUpdating || isRelogining || isClearingCooldown
+    || refreshingTokens.size > 0 || importOpen || Boolean(editingAccount);
+  const applyImageActivity = useCallback((snapshot: Account[]) => {
+    setAccounts(current => current === accounts
+      ? mergeActivity(current, snapshot, item => item.access_token, "image_inflight") : current);
+  }, [accounts]);
+  useActivityPolling({ fetch: fetchImageActivity, apply: applyImageActivity, paused: activityPaused });
+  useActivityPolling({ fetch: fetchGrokActivity, apply: grok.applyActivity, paused: activityPaused });
+
+  const handleClearImageCooldown = async (accountId: string) => {
+    setIsClearingCooldown(true);
+    try {
+      await clearImageCooldown(accountId);
+      await loadAccounts(true);
+      toast.success("已解除生图冷却与权限暂停");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "解除失败");
+    } finally {
+      setIsClearingCooldown(false);
+    }
+  };
 
   const summary = useMemo(() => {
     const total = accounts.length;
@@ -978,6 +1012,9 @@ function AccountsPageContent() {
         <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
           <CardContent className="p-4">
             <ModelCatalog state={modelCatalog} />
+            <div className="mt-5 border-t border-stone-200 pt-5">
+              <ModelCatalog state={textModelCatalog} kind="text" />
+            </div>
           </CardContent>
         </Card>
       </section>
@@ -1156,11 +1193,12 @@ function AccountsPageContent() {
                     const account = row.account;
                     const status = statusMeta[account.status];
                     const StatusIcon = status.icon;
+                    const inflight = account.image_inflight ?? 0;
 
                     return (
                       <tr
                         key={row.key}
-                        className="group border-b border-stone-100/80 text-sm text-stone-600 transition-colors hover:bg-stone-50/70"
+                        className={cn("group border-b border-stone-100/80 text-sm text-stone-600 transition-colors", inflight > 0 ? activityRowClass : "hover:bg-stone-50/70")}
                       >
                         <td className="px-4 py-3">
                           <Checkbox
@@ -1191,6 +1229,7 @@ function AccountsPageContent() {
                               <Copy className="size-4" />
                             </button>
                           </div>
+                          <AccountActivityBadge count={inflight} />
                         </td>
                         <td className="px-4 py-3">
                           <Badge variant="secondary" className="rounded-md bg-stone-100 text-stone-700">
@@ -1216,7 +1255,7 @@ function AccountsPageContent() {
                               <div>{block.until == null ? "等待管理员解除" : `剩余 ${Math.max(1, Math.ceil((block.until * 1000 - cooldownNow) / 60000))} 分钟`}</div>
                             </div>
                           ))}
-                          {Object.keys(account.image_blocks ?? {}).length > 0 && account.pool_account_id && <Button size="sm" variant="ghost" className="mt-1 h-6 px-1 text-xs" onClick={async () => { try { await clearImageCooldown(account.pool_account_id!); await loadAccounts(true); toast.success("已解除生图冷却与权限暂停"); } catch (error) { toast.error(error instanceof Error ? error.message : "解除失败"); } }}>解除限制</Button>}
+                          {Object.keys(account.image_blocks ?? {}).length > 0 && account.pool_account_id && <Button size="sm" variant="ghost" className="mt-1 h-6 px-1 text-xs" disabled={isClearingCooldown || poolBusy} onClick={() => void handleClearImageCooldown(account.pool_account_id!)}>解除限制</Button>}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3 text-center font-medium tabular-nums text-stone-700">
                           {account.priority ?? DEFAULT_ACCOUNT_PRIORITY}
@@ -1256,7 +1295,6 @@ function AccountsPageContent() {
                         </td>
                         <td className="px-3 py-3 tabular-nums">
                           {(() => {
-                            const inflight = account.image_inflight ?? 0;
                             return (
                               <span
                                 className={
@@ -1266,7 +1304,7 @@ function AccountsPageContent() {
                                 }
                                 title={
                                   inflight > 0
-                                    ? "当前正在生成的图片数。号池空闲时此值持续 > 0，说明并发槽位泄漏、该账号已被静默排除出调度"
+                                    ? "当前正在生成的图片数"
                                     : "当前无在途生图任务"
                                 }
                               >
@@ -1277,7 +1315,7 @@ function AccountsPageContent() {
                         </td>
                         <td className="px-3 py-3 tabular-nums text-stone-500">{account.success}</td>
                         <td className="px-3 py-3 tabular-nums text-stone-500">{account.fail}</td>
-                        <td className="sticky right-0 z-10 bg-card px-4 py-3 transition-colors before:pointer-events-none before:absolute before:inset-y-0 before:left-0 before:w-px before:bg-border group-hover:bg-stone-50 dark:group-hover:bg-stone-800">
+                        <td className={cn("sticky right-0 z-10 px-4 py-3 transition-colors before:pointer-events-none before:absolute before:inset-y-0 before:left-0 before:w-px before:bg-border", inflight > 0 ? activityActionClass : "bg-card group-hover:bg-stone-50 dark:group-hover:bg-stone-800")}>
                           <div className="flex items-center gap-1 text-stone-400">
                             <button
                               type="button"

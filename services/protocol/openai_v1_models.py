@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from services.account_service import account_service
-from utils.helper import CODEX_IMAGE_MODEL, all_web_image_models, register_discovered_web_image_models
+from utils.helper import CODEX_IMAGE_MODEL, all_web_image_models, is_supported_image_model, register_discovered_web_image_models
 
 
 def _image_models(*, include_source: bool) -> tuple[list[dict[str, object]], int]:
@@ -91,6 +91,29 @@ def discover_upstream_image_models(*, force_refresh: bool = False) -> None:
         model_catalog_service.list_models(force_refresh=force_refresh)
     except Exception:
         pass
+
+
+def get_text_catalog(*, force_refresh: bool = False) -> dict[str, object]:
+    """账号页文本目录，保留真实的上游同步状态并合并 Grok 对话入口。"""
+    from services.model_service import model_catalog_service
+    from services.providers.grok_catalog import catalog
+    from services.providers.grok_store import get_store
+
+    official = model_catalog_service.get_catalog(force_refresh=force_refresh)
+    data = [
+        {**model, "capabilities": ["chat"]}
+        for model in official["data"]
+        if not is_supported_image_model(model["id"]) and "image" not in model["id"]
+    ]
+    grok_accounts = [account for account in get_store().accounts()
+                     if account.get("enabled", True) and account.get("status") != "reauth_required"]
+    data.extend(catalog(grok_accounts, "chat"))
+    sync = {**official["sync"]}
+    sync["source_count"] += len(grok_accounts)
+    sync["successful_sources"] += len(grok_accounts)
+    if sync["status"] == "failed" and grok_accounts:
+        sync["status"] = "partial"
+    return {"object": "list", "data": data, "sync": sync}
 
 
 def get_catalog(*, force_refresh: bool = False) -> dict[str, object]:

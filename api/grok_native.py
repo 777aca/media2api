@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from api.support import require_admin, require_identity
-from services.providers.grok_accounts import parse_import
+from services.providers.grok_accounts import parse_import, pool
 from services.providers.grok_catalog import catalog
 from services.providers.grok_store import get_store
 from services.providers.grok_video import public, runtime
@@ -21,7 +21,9 @@ def create_router():
     @router.get("/api/grok/accounts")
     def accounts(authorization: str | None = Header(None)):
         require_admin(authorization)
-        return {"items": get_store().accounts()}
+        with pool.lock:
+            return {"items": [{**account, "request_inflight": pool.inflight.get(account["id"], 0)}
+                              for account in get_store().accounts()]}
 
     @router.post("/api/grok/accounts/import")
     def import_accounts(body: dict = Body(...), authorization: str | None = Header(None)):

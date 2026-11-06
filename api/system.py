@@ -27,6 +27,8 @@ from services.image_storage_service import ImageStorageError, image_storage_serv
 from services.image_tags_service import delete_tag, get_all_tags, set_tags
 from services.log_service import log_service
 from services.proxy_service import proxy_settings, test_clearance, test_proxy
+from services.quota_alert_settings import quota_alert_settings, public_quota_alert_settings
+from services.quota_alerts import QuotaAlertError, get_quota_alert_service, send_feishu
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -99,6 +101,34 @@ def create_router(app_version: str) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, detail={"error": str(exc)}) from exc
         return await run_in_threadpool(worker_ready, settings)
+
+    @router.get("/api/quota-alerts")
+    async def get_quota_alerts(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return {"settings": public_quota_alert_settings(config.get_quota_alert_settings()),
+                "status": await run_in_threadpool(get_quota_alert_service().status)}
+
+    @router.post("/api/quota-alerts")
+    async def save_quota_alerts(body: SettingsUpdateRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            config.update({"quota_alerts": body.model_dump(mode="python")})
+        except ValueError as exc:
+            raise HTTPException(400, detail={"error": str(exc)}) from exc
+        return {"settings": public_quota_alert_settings(config.get_quota_alert_settings()),
+                "status": await run_in_threadpool(get_quota_alert_service().status)}
+
+    @router.post("/api/quota-alerts/test")
+    async def test_quota_alerts(body: SettingsUpdateRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            settings = quota_alert_settings(body.model_dump(mode="python"), config.get_quota_alert_settings())
+            await run_in_threadpool(send_feishu, settings, "media2api 账号配额提醒：测试推送成功。此消息不代表账号配额不足。")
+        except ValueError as exc:
+            raise HTTPException(400, detail={"error": str(exc)}) from exc
+        except QuotaAlertError as exc:
+            raise HTTPException(502, detail={"error": str(exc)}) from exc
+        return {"ok": True}
 
     @router.get("/api/images")
     async def get_images(request: Request, start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):

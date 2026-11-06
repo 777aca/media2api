@@ -10,6 +10,7 @@ import time
 
 from services.storage.base import StorageBackend
 from services.image_resolution import calibration_settings
+from services.quota_alert_settings import quota_alert_settings, public_quota_alert_settings
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
@@ -637,6 +638,7 @@ class ConfigStore:
         data["default_upstream_model_name"] = self.default_upstream_model_name
         data["default_thinking_effort"] = self.default_thinking_effort
         data["backup"] = self.get_backup_settings()
+        data["quota_alerts"] = public_quota_alert_settings(self.get_quota_alert_settings())
         data["image_storage"] = self.get_image_storage_settings()
         from services.generation_runtime import queue_settings
         data["image_queue"] = queue_settings(self.data.get("image_queue"))
@@ -682,6 +684,8 @@ class ConfigStore:
         updates = dict(data or {})
         # 忽略旧客户端的画布设置，保留运行配置中已有的历史字段。
         updates.pop("third_party_apps", None)
+        if "quota_alerts" in updates:
+            updates["quota_alerts"] = quota_alert_settings(updates["quota_alerts"], self.get_quota_alert_settings())
         next_data.update(updates)
         if "image_queue" in next_data:
             from services.generation_runtime import queue_settings
@@ -718,6 +722,9 @@ class ConfigStore:
 
     def get_backup_settings(self) -> dict[str, object]:
         return _normalize_backup_settings(self.data.get("backup"))
+
+    def get_quota_alert_settings(self) -> dict:
+        return quota_alert_settings(self.data.get("quota_alerts") or {})
 
     def get_image_calibration_settings(self) -> dict[str, object]:
         return calibration_settings(self.data.get("image_calibration"))
