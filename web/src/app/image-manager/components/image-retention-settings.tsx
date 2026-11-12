@@ -57,10 +57,10 @@ export function ImageRetentionSettings({ onSaved }: { onSaved: () => void }) {
           </h2>
           <p className="text-xs leading-5 text-stone-500">
             {savedHours === null ? "读取当前有效期后可修改。" : `当前保留 ${formatImageRetention(savedHours)}。`}
-            到期自动清理本地图片及无远程副本的缩略图，保留生成记录和调用日志。
+            到期同步删除本地及 R2/S3 图片，清理对应缩略图，保留生成记录和调用日志。
           </p>
           <p id="image-retention-hint" className="text-xs leading-5 text-stone-500">
-            最少 1 小时，24 小时 = 1 天。保存后适用于已有和新增图片，按文件保存时间计算；每分钟及加载列表时检查。R2/S3 或 WebDAV 远程副本不受影响。
+            最少 1 小时，24 小时 = 1 天。保存后适用于已有和新增图片；本地按文件保存时间、仅存 R2/S3 的图片按创建时间计算，每分钟及加载列表时检查。删除失败会保留记录并重试，WebDAV 远程副本不受影响。
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">

@@ -11,7 +11,7 @@ from unittest import mock
 from PIL import Image
 
 from services.config import _normalize_image_storage_settings, _validate_image_storage_settings
-from services.image_storage_service import ImageStorageService, S3ImageClient
+from services.image_storage_service import ImageStorageError, ImageStorageService, S3ImageClient
 
 
 def png_bytes() -> bytes:
@@ -98,7 +98,7 @@ class ImageStorageServiceTests(unittest.TestCase):
         self.addCleanup(self.config_patcher.stop)
         self.mock_config.images_dir = self.images_dir
         self.mock_config.base_url = "http://app.test"
-        self.mock_config.cleanup_old_images.return_value = 0
+        self.mock_config.image_retention_hours = 360
         self.mock_config.get_image_storage_settings.side_effect = lambda: dict(self.settings)
         FakeWebDAVClient.uploaded = {}
         FakeWebDAVClient.deleted = []
@@ -236,6 +236,40 @@ class ImageStorageServiceTests(unittest.TestCase):
         self.assertEqual(client.object_key("2026/11/02/a.png"), "media2api/images/2026/11/02/a.png")
         _, headers = client._aws_v4_headers("PUT", "/my-bucket/media2api/images/2026/11/02/a.png", body=b"abc")
         self.assertIn("AWS4-HMAC-SHA256 Credential=AKID/", headers["authorization"])
+
+    def test_manual_delete_failure_preserves_both_copies_for_retry(self):
+        self.settings.update({"provider": "s3", "mode": "both"})
+        service = self.service()
+        with mock.patch("services.image_storage_service.S3ImageClient") as client:
+            client.return_value.put.return_value = "https://r2.example.test/synthetic.png"
+            stored = service.save(png_bytes())
+            before = service.index_file.read_bytes()
+            for error in (ImageStorageError("R2/S3 DELETE failed: HTTP 403"), TimeoutError("network timeout")):
+                with self.subTest(error=type(error).__name__):
+                    client.return_value.delete.side_effect = error
+                    with self.assertRaises(type(error)):
+                        service.delete(stored.rel)
+                    self.assertTrue((self.images_dir / stored.rel).is_file())
+                    self.assertEqual(service.index_file.read_bytes(), before)
+            client.return_value.delete.side_effect = None
+            client.return_value.delete.return_value = True
+            self.assertTrue(service.delete(stored.rel))
+        self.assertFalse((self.images_dir / stored.rel).exists())
+        self.assertEqual(service._load_index(), {})
+
+    def test_s3_delete_treats_404_as_already_missing(self):
+        client = S3ImageClient(self.settings)
+        with mock.patch.object(client, "_request", return_value=mock.Mock(status_code=404)):
+            self.assertFalse(client.delete("2026/10/01/missing.png"))
+
+    def test_s3_delete_wraps_network_failure_without_exposing_request_details(self):
+        from curl_cffi import requests
+
+        client = S3ImageClient(self.settings)
+        with mock.patch.object(client, "_request", side_effect=requests.RequestsError("synthetic private request")):
+            with self.assertRaises(ImageStorageError) as caught:
+                client.delete("2026/10/01/timeout.png")
+        self.assertEqual(str(caught.exception), "R2/S3 DELETE failed: network request failed")
 
     def test_config_validation_for_s3_and_webdav(self):
         normalized = _normalize_image_storage_settings({

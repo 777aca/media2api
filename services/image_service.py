@@ -353,7 +353,7 @@ def download_images_zip(paths: list[str]) -> io.BytesIO:
 
 
 def _auto_cleanup_worker(stop_event: threading.Event) -> None:
-    """每分钟按当前有效期清理本地图片，并检查剩余空间。"""
+    """每分钟按当前有效期清理本地和 R2/S3 图片，并检查剩余空间。"""
     import shutil
     min_free_mb = getattr(config, "image_min_free_mb", None)
     if min_free_mb is None:

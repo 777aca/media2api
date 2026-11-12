@@ -15,7 +15,8 @@ from curl_cffi import requests
 from fastapi import HTTPException
 from PIL import Image
 
-from services.config import DATA_DIR, config
+from services.config import DATA_DIR, ConfigStore, config
+from utils.log import logger
 
 IMAGE_INDEX_FILE = DATA_DIR / "image_index.json"
 IMAGE_INDEX_LOCK = Lock()
@@ -101,9 +102,9 @@ def _is_image_rel(path: str) -> bool:
     return Path(safe_rel).suffix.lower() in IMAGE_EXTENSIONS
 
 
-def _local_image_path(relative_path: str) -> Path:
+def _local_image_path(relative_path: str, images_dir: Path | None = None) -> Path:
     rel = _safe_relative_path(relative_path)
-    root = config.images_dir.resolve()
+    root = (images_dir if images_dir is not None else config.images_dir).resolve()
     path = (root / rel).resolve()
     try:
         path.relative_to(root)
@@ -328,7 +329,10 @@ class S3ImageClient:
         return bytes(response.content)
 
     def delete(self, rel: str) -> bool:
-        response = self._request("DELETE", rel)
+        try:
+            response = self._request("DELETE", rel)
+        except requests.RequestsError as exc:
+            raise ImageStorageError("R2/S3 DELETE failed: network request failed") from exc
         if response.status_code in {200, 202, 204, 404}:
             return response.status_code != 404
         raise ImageStorageError(f"R2/S3 DELETE failed: HTTP {response.status_code}")
@@ -420,7 +424,7 @@ class ImageStorageService:
         return f"{relative_dir.as_posix()}/{filename}"
 
     def save(self, image_data: bytes, base_url: str | None = None) -> StoredImage:
-        config.cleanup_old_images()
+        self.cleanup_expired_images()
         rel = self.make_relative_path(image_data)
         mode = self.mode()
         if mode not in {"local", "webdav", "s3", "both"}:
@@ -570,31 +574,82 @@ class ImageStorageService:
         items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
         return items
 
-    def delete(self, rel: str) -> bool:
+    def delete(self, rel: str, *, include_webdav: bool = True, config_store: ConfigStore | None = None) -> bool:
         safe_rel = _safe_relative_path(rel)
-        removed = False
-        path = _local_image_path(safe_rel)
-        if path.is_file():
-            path.unlink()
-            removed = True
+        store = config_store if config_store is not None else config
+        path = _local_image_path(safe_rel, store.images_dir)
         with self._index_lock:
             items = self._load_clean_index()
-            item = items.get(safe_rel, {})
+            item = dict(items.get(safe_rel, {}))
+            removed = False
+            # Keep the index and local file until remote deletion succeeds, so a
+            # failed DELETE (including a network timeout) can be retried.
             if item.get("s3"):
-                try:
-                    removed = S3ImageClient(self.settings()).delete(safe_rel) or removed
-                except ImageStorageError:
-                    if not removed:
-                        raise
-            if item.get("webdav"):
-                try:
-                    removed = WebDAVClient(self.settings()).delete(safe_rel) or removed
-                except ImageStorageError:
-                    if not removed:
-                        raise
+                S3ImageClient(store.get_image_storage_settings()).delete(safe_rel)
+                item["s3"] = False
+                removed = True  # A remote 404 also completes deletion of the record.
+            if include_webdav and item.get("webdav"):
+                WebDAVClient(store.get_image_storage_settings()).delete(safe_rel)
+                item["webdav"] = False
+                removed = True
+            if path.is_file():
+                path.unlink(missing_ok=True)
+                removed = True
             if safe_rel in items:
-                items.pop(safe_rel, None)
+                if item.get("webdav"):
+                    items[safe_rel] = {**item, "local": False, "storage": "webdav"}
+                else:
+                    items.pop(safe_rel, None)
                 self._save_index(items)
+        return removed
+
+    def cleanup_expired_images(self, *, config_store: ConfigStore | None = None) -> int:
+        """Expire local files and indexed R2/S3 copies; retain WebDAV copies."""
+        store = config_store if config_store is not None else config
+        cutoff = time.time() - store.image_retention_hours * 3600
+        root = store.images_dir.resolve()
+        with self._index_lock:
+            indexed = self._load_clean_index()
+        candidates = {rel: item for rel, item in indexed.items() if item.get("s3")}
+        for path in root.rglob("*"):
+            if path.is_symlink() or not path.resolve().is_relative_to(root):
+                continue
+            if path.is_file():
+                rel = path.relative_to(root).as_posix()
+                candidates[rel] = indexed.get(rel, {})
+
+        removed = 0
+        for rel, item in candidates.items():
+            try:
+                unresolved = root / rel
+                if unresolved.is_symlink() or any(
+                    parent.is_symlink() for parent in unresolved.parents if parent.is_relative_to(root)
+                ):
+                    continue
+                path = _local_image_path(rel, root)
+                # Existing local files keep their original mtime-based policy.
+                # Remote-only copies use their indexed creation time, falling
+                # back to the Unix timestamp in legacy generated filenames.
+                modified_at = path.stat().st_mtime if path.is_file() else None
+                instant = _image_instant(rel, item.get("created_at")) if modified_at is None else None
+                saved_at = modified_at if modified_at is not None else (instant.timestamp() if instant else None)
+                if saved_at is None or saved_at > cutoff:
+                    continue
+                if self.delete(rel, include_webdav=False, config_store=store):
+                    removed += 1
+            except Exception as exc:
+                # Continue with other images and retain failed records for the
+                # next sweep. Do not log request URLs or storage credentials.
+                logger.warning({"event": "image_retention_delete_failed", "path": rel,
+                                "error_type": type(exc).__name__})
+
+        for path in sorted((p for p in root.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+            if path.is_symlink() or not path.resolve().is_relative_to(root):
+                continue
+            try:
+                path.rmdir()
+            except OSError:
+                pass
         return removed
 
     def sync_all(self) -> dict[str, int]:

@@ -176,7 +176,7 @@ export function ConfigCard({ section = "pool" }: { section?: keyof typeof sectio
               placeholder="360"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">最少 1 小时，24 小时 = 1 天。与图片管理共用设置。到期清理本地图片，保留生成记录和调用日志；不删除 R2/S3 或 WebDAV 远程副本。</p>
+            <p className="text-xs text-stone-500">最少 1 小时，24 小时 = 1 天。与图片管理共用设置。到期同步删除本地及 R2/S3 图片，失败保留记录并重试；保留生成记录和调用日志，WebDAV 远程副本不受影响。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">图片轮询超时</label>

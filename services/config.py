@@ -6,7 +6,6 @@ import json
 import os
 import sys
 from pathlib import Path
-import time
 
 from services.storage.base import StorageBackend
 from services.image_resolution import calibration_settings
@@ -578,27 +577,10 @@ class ConfigStore:
         return path
 
     def cleanup_old_images(self) -> int:
-        cutoff = time.time() - self.image_retention_hours * 3600
-        removed = 0
-        root = self.images_dir.resolve()
-        for path in root.rglob("*"):
-            if path.is_symlink() or not path.resolve().is_relative_to(root):
-                continue
-            try:
-                if path.is_file() and path.stat().st_mtime <= cutoff:
-                    path.unlink()
-                    removed += 1
-            except FileNotFoundError:
-                # 图片可能已被另一个清理请求删除。
-                continue
-        for path in sorted((p for p in root.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
-            if path.is_symlink() or not path.resolve().is_relative_to(root):
-                continue
-            try:
-                path.rmdir()
-            except OSError:
-                pass
-        return removed
+        # Import lazily: image storage itself reads configuration at import time.
+        from services.image_storage_service import ImageStorageService
+
+        return ImageStorageService(DATA_DIR / "image_index.json").cleanup_expired_images(config_store=self)
 
     @property
     def base_url(self) -> str:
