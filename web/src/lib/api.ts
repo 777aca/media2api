@@ -72,6 +72,15 @@ export type AccountImportPayload = {
   [key: string]: unknown;
 };
 
+export type AccountCredentialImportPayload = {
+  email: string;
+  password: string;
+  totp_secret: string;
+  source_type: "web";
+};
+
+export type AccountTextImportPayload = AccountImportPayload | AccountCredentialImportPayload;
+
 type AccountListResponse = {
   items: Account[];
 };
@@ -88,7 +97,7 @@ type AccountMutationResponse = {
   removed?: number;
   refreshed?: number;
   relogined?: number;
-  errors?: Array<{ access_token: string; error: string }>;
+  errors?: Array<{ access_token?: string; token?: string; account_index?: number; error: string }>;
 };
 
 export type AccountRefreshResponse = {
@@ -385,7 +394,7 @@ export async function syncTextModelCatalog() {
   return parseModelCatalogResponse(await httpRequest<unknown>("/api/text-models/sync", { method: "POST", body: {} }));
 }
 
-export async function createAccounts(tokens: string[], accounts: AccountImportPayload[] = []) {
+export async function createAccounts(tokens: string[], accounts: AccountTextImportPayload[] = []) {
   return httpRequest<AccountMutationResponse>("/api/accounts", {
     method: "POST",
     body: { tokens, accounts },

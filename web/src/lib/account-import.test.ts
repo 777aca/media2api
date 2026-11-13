@@ -19,6 +19,17 @@ const secondAccount = {
   source_type: "web",
 };
 
+const credentialAccount = {
+  email: "pending@example.test",
+  password: "-synthetic-password",
+  totp_secret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+  source_type: "web",
+};
+
+function credentialLine(account = credentialAccount): string {
+  return [account.email, account.password, account.totp_secret].join("----");
+}
+
 function accountLine(account = firstAccount): string {
   return [
     account.email,
@@ -49,6 +60,59 @@ describe("parseAccountImportText", () => {
       accounts: [firstAccount],
       errors: [],
     });
+  });
+
+  it("reads a three-field card export without treating the title or TOTP secret as tokens", () => {
+    const result = parseAccountImportText(`\uFEFF卡密导出\r\n\r\n${credentialLine()}\r\n`);
+
+    assert.deepEqual(result, {
+      tokens: [],
+      accounts: [credentialAccount],
+      errors: [],
+    });
+    assert.ok(!("access_token" in result.accounts[0]));
+  });
+
+  it("supports mixed three-field records, four-field records, and plain tokens", () => {
+    const result = parseAccountImportText(
+      `卡密导出\n卡密 1： ${credentialLine()}\n${accountLine()}\nopaque-token\n卡密导出\n${credentialLine()}`,
+    );
+
+    assert.deepEqual(result, {
+      tokens: ["opaque-token"],
+      accounts: [firstAccount, credentialAccount],
+      errors: [],
+    });
+  });
+
+  it("deduplicates three-field records by case-insensitive email and keeps the latest credentials", () => {
+    const updated = { ...credentialAccount, email: "PENDING@example.test", password: "new-password" };
+    const result = parseAccountImportText(`${credentialLine()}\n${credentialLine(updated)}`);
+
+    assert.deepEqual(result.accounts, [updated]);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("rejects incomplete or invalid three-field credentials and reports physical line numbers", () => {
+    const lines = [
+      "卡密导出",
+      "",
+      credentialLine({ ...credentialAccount, email: "invalid-email" }),
+      credentialLine({ ...credentialAccount, password: "" }),
+      credentialLine({ ...credentialAccount, totp_secret: "" }),
+      credentialLine({ ...credentialAccount, totp_secret: "not-a-totp-secret" }),
+      credentialLine({ ...credentialAccount, totp_secret: "ABC234" }),
+      credentialLine({ ...credentialAccount, totp_secret: "JBSWY3DPEHPK3PX1" }),
+    ];
+    const result = parseAccountImportText(lines.join("\n"));
+
+    assert.deepEqual(result.tokens, []);
+    assert.deepEqual(result.accounts, []);
+    assert.deepEqual(result.errors.map((error) => error.line), [3, 4, 5, 6, 7, 8]);
+    for (const error of result.errors) {
+      assert.ok(!error.message.includes(credentialAccount.password));
+      assert.ok(!error.message.includes(credentialAccount.totp_secret));
+    }
   });
 
   it("removes numbered card and account prefixes", () => {
@@ -189,7 +253,7 @@ describe("parseAccountImportText", () => {
 
   it("reports original physical line numbers while preserving valid entries", () => {
     const result = parseAccountImportText(
-      `\uFEFF\r\nopaque-token\r\n\r\n账号4: ${firstAccount.email}----${firstAccount.password}----${firstAccount.totp_secret}\r\n${accountLine(secondAccount)}`,
+      `\uFEFF\r\nopaque-token\r\n\r\n账号4: ${firstAccount.email}----${firstAccount.password}\r\n${accountLine(secondAccount)}`,
     );
 
     assert.deepEqual(result.tokens, ["opaque-token"]);

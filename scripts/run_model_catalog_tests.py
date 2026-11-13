@@ -43,6 +43,7 @@ DEFAULT_TESTS = [
     "test.test_account_export",
     "test.test_account_image_capabilities",
     "test.test_account_text_import_payload",
+    "test.test_account_credential_login",
     "test.test_v1_models.ModelListTests.test_list_models_only_returns_image_models_backed_by_account_types",
     "test.test_v1_models.ModelListTests.test_list_models_does_not_return_codex_models_for_web_plus_accounts",
 ]

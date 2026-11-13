@@ -33,6 +33,7 @@ import {
   startOAuthLogin,
   type Account,
   type AccountImportPayload,
+  type AccountTextImportPayload,
   type OAuthLoginStartResponse,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -220,10 +221,10 @@ export function AccountImportDialog({ disabled, onImported, grokBusy, grokError,
     }
   };
 
-  const submitTokens = async (tokens: string[], successText?: string, accountPayloads: AccountImportPayload[] = []) => {
+  const submitTokens = async (tokens: string[], successText?: string, accountPayloads: AccountTextImportPayload[] = []) => {
     const normalizedTokens = tokens.map((item) => item.trim()).filter(Boolean);
 
-    if (normalizedTokens.length === 0) {
+    if (normalizedTokens.length === 0 && accountPayloads.length === 0) {
       toast.error("请先提供至少一个可用 Token");
       return;
     }
@@ -232,8 +233,10 @@ export function AccountImportDialog({ disabled, onImported, grokBusy, grokError,
     try {
       const data = await createAccounts(normalizedTokens, accountPayloads);
       onImported(data.items);
-      setOpen(false);
-      resetState();
+      if ((data.errors?.length ?? 0) === 0) {
+        setOpen(false);
+        resetState();
+      }
 
       if ((data.errors?.length ?? 0) > 0) {
         const firstError = data.errors?.[0]?.error;
@@ -260,7 +263,7 @@ export function AccountImportDialog({ disabled, onImported, grokBusy, grokError,
       toast.error(`第 ${firstError.line} 行：${firstError.message}，请修正后再导入`);
       return;
     }
-    const tokens = [...parsed.tokens, ...parsed.accounts.map((account) => account.access_token)];
+    const tokens = [...parsed.tokens, ...parsed.accounts.flatMap((account) => "access_token" in account ? [account.access_token] : [])];
     await submitTokens(tokens, "账号文本导入完成", parsed.accounts);
   };
 
@@ -481,13 +484,13 @@ export function AccountImportDialog({ disabled, onImported, grokBusy, grokError,
             <label htmlFor="account-token-input" className="text-sm font-medium text-stone-700">账号或 Access Token 列表</label>
             <Textarea
               id="account-token-input"
-              placeholder={"每行一个 Access Token，或：\n邮箱----密码----二步验证密钥----Access Token"}
+              placeholder={"每行一个 Access Token，或：\n邮箱----密码----二步验证密钥\n邮箱----密码----二步验证密钥----Access Token"}
               value={tokenInput}
               onChange={(event) => setTokenInput(event.target.value)}
               className="min-h-56 resize-none rounded-xl border-stone-200"
             />
             {parsed.accounts.length > 0 ? (
-              <p className="text-xs leading-5 text-stone-500">已识别 {parsed.accounts.length} 条完整账号记录，将保留邮箱、密码和二步验证密钥。二步验证密钥仅保存，不自动执行验证。</p>
+              <p className="text-xs leading-5 text-stone-500">已识别 {parsed.accounts.length} 条账号记录，将保留邮箱、密码和二步验证密钥。三段式账号将自动登录并获取 Token；四段式直接使用已有 Token。</p>
             ) : null}
             {parsed.errors.length > 0 ? (
               <div role="alert" className="space-y-1 text-xs leading-5 text-red-600">
@@ -502,7 +505,7 @@ export function AccountImportDialog({ disabled, onImported, grokBusy, grokError,
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-1">
                 <div className="text-sm font-medium text-stone-800">从 TXT 文件导入</div>
-                <div className="text-sm leading-6 text-stone-500">支持一行一个 Token，或邮箱、密码、二步验证密钥、Token 以 ---- 分隔的账号记录；兼容「卡密 N:」前缀。</div>
+                <div className="text-sm leading-6 text-stone-500">支持一行一个 Token，或以 ---- 分隔的三段式、四段式账号记录；兼容「卡密导出」标题和「卡密 N:」前缀。三段式会自动登录，可能需要等待一段时间。</div>
               </div>
               <Button
                 type="button"
@@ -819,7 +822,7 @@ export function AccountImportDialog({ disabled, onImported, grokBusy, grokError,
               {!platform ? "先选择平台，再使用对应的方式导入账号。" : platform === "grok" ? "每行粘贴一个 SSO，或粘贴 grok2api 导出的 Web 账号 JSON。" : method === "menu"
                 ? "选择一种导入方式。导入成功后会自动拉取邮箱、类型和额度。"
                 : method === "token"
-                  ? "支持粘贴或 TXT 上传：每行一个 Token，或邮箱----密码----二步验证密钥----Access Token。"
+                  ? "支持粘贴或 TXT 上传：每行一个 Token，或邮箱----密码----二步验证密钥（可追加 ----Access Token）。"
                   : method === "session"
                     ? "粘贴完整 Session JSON，系统会自动提取 accessToken。"
                     : method === "codex-auth"
@@ -865,7 +868,7 @@ export function AccountImportDialog({ disabled, onImported, grokBusy, grokError,
                 disabled={footerDisabled || !tokenInput.trim() || parseAccountImportText(tokenInput).errors.length > 0}
               >
                 {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
-                导入账号
+                {isSubmitting ? "正在登录并导入…" : "导入账号"}
               </Button>
             ) : null}
             {platform === "openai" && method === "session" ? (

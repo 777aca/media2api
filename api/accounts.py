@@ -24,6 +24,7 @@ from api.support import (
     sanitize_sub2api_servers,
 )
 from services.account_service import account_service
+from services.account_credentials import normalize_credentials
 from services.account_scheduling import MAX_PRIORITY, MAX_WEIGHT
 from services.cpa_service import cpa_config, cpa_import_service, list_remote_files
 from services.oauth_login_service import OAuthLoginError, oauth_login_service
@@ -215,9 +216,30 @@ def create_router() -> APIRouter:
     async def create_accounts(body: AccountCreateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         account_payloads = [item for item in body.accounts if isinstance(item, dict)]
+        credential_payloads = [item for item in account_payloads if not _account_payload_token(item)]
+        # 先校验整批，再启动远程登录，格式错误不会产生部分写入。
+        for index, item in enumerate(credential_payloads, 1):
+            try:
+                normalize_credentials(item)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail={"error": f"第 {index} 条三段式账号：{exc}"}) from None
+        login_result = {"accounts": [], "errors": []}
+        if credential_payloads:
+            login_result = await run_in_threadpool(account_service.login_account_items, credential_payloads)
+        account_payloads = [item for item in account_payloads if _account_payload_token(item)] + login_result["accounts"]
+        if credential_payloads:
+            # 自动登录可能轮换已有 Token，混合提交的旧 Token 应指向更新后的账号。
+            account_payloads = [
+                {**item, "access_token": account_service.resolve_access_token(_account_payload_token(item))}
+                for item in account_payloads
+            ]
         payload_tokens = [_account_payload_token(item) for item in account_payloads]
         tokens = _unique_tokens([*body.tokens, *payload_tokens])
+        if credential_payloads:
+            tokens = _unique_tokens([account_service.resolve_access_token(token) for token in tokens])
         if not tokens:
+            if login_result["errors"]:
+                return {"added": 0, "skipped": 0, "refreshed": 0, "errors": login_result["errors"], "items": account_service.list_accounts()}
             raise HTTPException(status_code=400, detail={"error": "tokens is required"})
         if account_payloads:
             result = account_service.add_account_items(account_payloads)
@@ -229,11 +251,11 @@ def create_router() -> APIRouter:
                 result["skipped"] = int(result.get("skipped") or 0) + int(extra_result.get("skipped") or 0)
         else:
             result = account_service.add_accounts(tokens)
-        refresh_result = account_service.refresh_accounts(tokens)
+        refresh_result = await run_in_threadpool(account_service.refresh_accounts, tokens)
         return {
             **result,
             "refreshed": refresh_result.get("refreshed", 0),
-            "errors": refresh_result.get("errors", []),
+            "errors": [*login_result["errors"], *refresh_result.get("errors", [])],
             "items": refresh_result.get("items", result.get("items", [])),
         }
 

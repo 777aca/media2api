@@ -175,9 +175,85 @@ class AccountTextImportPayloadTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"]["error"], "tokens is required")
+        self.assertIn("三段式账号", response.json()["detail"]["error"])
         self.assertEqual(self.storage.load_accounts(), [])
         self.fetch_remote_info.assert_not_called()
+
+    def test_api_three_field_account_logs_in_and_persists_real_tokens(self) -> None:
+        credentials = {key: CARD_ACCOUNT[key] for key in ("email", "password", "totp_secret")}
+        with mock.patch.object(self.service, "_login_with_password", return_value={
+            "ok": True, "access_token": "card-access-token", "refresh_token": "login-refresh",
+            "id_token": "login-id", "source_type": "password",
+        }) as login:
+            response = self.client.post("/api/accounts", headers=AUTH_HEADERS, json={"accounts": [credentials], "tokens": ["card-access-token"]})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((response.json()["added"], response.json()["refreshed"]), (1, 1))
+        login.assert_called_once_with(credentials["email"], credentials["password"], credentials["totp_secret"])
+        account = AccountService(self.storage).get_account("card-access-token")
+        for key, value in CARD_ACCOUNT.items():
+            self.assertEqual(account[key], value)
+        self.assertEqual(account["refresh_token"], "login-refresh")
+        self.fetch_remote_info.assert_called_once_with("card-access-token", "refresh_accounts", True)
+
+    def test_api_partial_login_failure_imports_successes_without_leaking_secrets(self) -> None:
+        credentials = {key: CARD_ACCOUNT[key] for key in ("email", "password", "totp_secret")}
+        failed = {**credentials, "email": "failed@example.test"}
+
+        def login(email: str, *_args: object) -> dict:
+            if email == failed["email"]:
+                raise RuntimeError(f"private {failed['password']} {failed['totp_secret']}")
+            return {"ok": True, "access_token": "card-access-token"}
+
+        with mock.patch.object(self.service, "_login_with_password", side_effect=login) as mocked:
+            response = self.client.post("/api/accounts", headers=AUTH_HEADERS, json={
+                "accounts": [credentials, {**credentials, "email": credentials["email"].upper()}, failed],
+                "tokens": ["plain-access-token"],
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["added"], 2)
+        self.assertEqual(mocked.call_count, 2)
+        errors = response.json()["errors"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["account_index"], 3)
+        for secret in (failed["password"], failed["totp_secret"], failed["email"]):
+            self.assertNotIn(secret, str(errors))
+        self.assertEqual(len(self.storage.load_accounts()), 2)
+
+    def test_api_all_logins_fail_without_storing_or_refreshing(self) -> None:
+        credentials = {key: CARD_ACCOUNT[key] for key in ("email", "password", "totp_secret")}
+        with mock.patch.object(self.service, "_login_with_password", return_value={"ok": False, "error": "invalid_password"}):
+            response = self.client.post("/api/accounts", headers=AUTH_HEADERS, json={"accounts": [credentials]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["added"], 0)
+        self.assertEqual(response.json()["errors"][0]["error"], "第 1 条三段式账号：密码错误")
+        self.assertEqual(self.storage.load_accounts(), [])
+        self.fetch_remote_info.assert_not_called()
+
+    def test_api_reimport_rotates_token_and_preserves_account_identity(self) -> None:
+        credentials = {key: CARD_ACCOUNT[key] for key in ("email", "password", "totp_secret")}
+        self.service.add_account_items([{**CARD_ACCOUNT, "priority": 17, "weight": 9}])
+        identity = self.service.get_account("card-access-token")["pool_account_id"]
+        with mock.patch.object(self.service, "_login_with_password", return_value={"ok": True, "access_token": "rotated-token"}):
+            response = self.client.post("/api/accounts", headers=AUTH_HEADERS, json={
+                "accounts": [credentials], "tokens": ["card-access-token"],
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((response.json()["added"], response.json()["skipped"]), (0, 1))
+        account = AccountService(self.storage).get_account("rotated-token")
+        self.assertEqual((account["pool_account_id"], account["priority"], account["weight"]), (identity, 17, 9))
+        self.assertEqual(len(self.storage.load_accounts()), 1)
+
+    def test_api_validates_entire_batch_before_logging_in_or_writing(self) -> None:
+        credentials = {key: CARD_ACCOUNT[key] for key in ("email", "password", "totp_secret")}
+        with mock.patch.object(self.service, "_login_with_password") as login:
+            response = self.client.post("/api/accounts", headers=AUTH_HEADERS, json={
+                "accounts": [credentials, {**credentials, "totp_secret": "invalid-secret"}],
+                "tokens": ["plain-access-token"],
+            })
+        self.assertEqual(response.status_code, 400)
+        login.assert_not_called()
+        self.assertEqual(self.storage.load_accounts(), [])
 
 
 if __name__ == "__main__":

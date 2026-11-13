@@ -10,7 +10,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Condition, Lock, Thread
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
+
+from services.account_credentials import credential_login_error, normalize_credentials, totp_code
 
 from services.account_scheduling import (
     AccountScheduler,
@@ -524,7 +526,8 @@ class AccountService:
     def _password_re_login_thread(self, access_token: str, email: str, password: str, event: str, progress_id: str | None = None) -> None:
         """密码重新登录线程入口"""
         try:
-            result = self._login_with_password(email, password)
+            account = self.get_account(access_token) or {}
+            result = self._login_with_password(email, password, str(account.get("totp_secret") or ""))
             if result.get("ok"):
                 # 登录成功，更新账号
                 new_access_token = result.get("access_token", "")
@@ -633,8 +636,8 @@ class AccountService:
             if progress_id:
                 self.update_relogin_progress(progress_id, access_token, "异常", str(exc))
 
-    def _login_with_password(self, email: str, password: str) -> dict:
-        """通过邮箱+密码登录，返回 {access_token, refresh_token, id_token, ...}"""
+    def _login_with_password(self, email: str, password: str, totp_secret: str = "") -> dict:
+        """通过邮箱、密码及可选 TOTP 登录，返回真实 Token。"""
         from curl_cffi import requests
         
         # 常量
@@ -709,7 +712,6 @@ class AccountService:
             # 检测最终 URL 是否指向错误页面
             final_url = str(resp.url)
             if "/error" in final_url and "payload=" in final_url:
-                from urllib.parse import parse_qs, urlparse
                 try:
                     parsed_query = parse_qs(urlparse(final_url).query)
                     error_payload_b64 = parsed_query.get("payload", [""])[0]
@@ -775,13 +777,47 @@ class AccountService:
                     return {"ok": False, "error": "invalid_password", "detail": login_data}
                 return {"ok": False, "error": f"password_verify_failed_{login_resp.status_code}", "detail": login_data}
             
-            # 获取 authorization code
+            # 密码验证后的 TOTP 挑战；密钥仅用于本地生成动态码。
+            continue_url = str(login_data.get("continue_url") or "").strip()
+            page_info = login_data.get("page")
+            page_type = str(page_info.get("type") or "") if isinstance(page_info, dict) else ""
+            if page_type in {"mfa_challenge", "mfa_verification"} or "/mfa-challenge/" in continue_url:
+                if not totp_secret:
+                    return {"ok": False, "error": "mfa_verify_failed"}
+                challenge_path = urlparse(continue_url).path.rstrip("/")
+                challenge_id = challenge_path.rsplit("/mfa-challenge/", 1)[-1] if "/mfa-challenge/" in challenge_path else ""
+                if not challenge_id:
+                    return {"ok": False, "error": "mfa_challenge_missing"}
+                mfa_resp = session.post(
+                    f"{auth_base}/api/accounts/mfa/verify",
+                    headers={**login_headers, "referer": f"{auth_base}/mfa-challenge"},
+                    json={"code": totp_code(totp_secret), "type": "totp", "id": challenge_id},
+                    timeout=30,
+                )
+                if mfa_resp.status_code != 200:
+                    return {"ok": False, "error": "mfa_verify_failed"}
+                login_data = mfa_resp.json()
+                if not isinstance(login_data, dict):
+                    return {"ok": False, "error": "mfa_verify_failed"}
+
+            # 获取 authorization code，允许上游在验证后通过同站重定向继续授权。
             continue_url = str(login_data.get("continue_url") or "").strip()
             auth_code = ""
-            if continue_url:
-                from urllib.parse import parse_qs, urlparse
+            for _ in range(8):
+                if not continue_url:
+                    break
+                continue_url = urljoin(auth_base, continue_url)
+                parsed_url = urlparse(continue_url)
+                if parsed_url.scheme != "https" or parsed_url.netloc not in {"auth.openai.com", "platform.openai.com"}:
+                    break
                 parsed_params = parse_qs(urlparse(continue_url).query)
                 auth_code = str((parsed_params.get("code") or [""])[0]).strip()
+                if auth_code or parsed_url.netloc != "auth.openai.com":
+                    break
+                if any(part in parsed_url.path for part in ("email-verification", "mfa-challenge", "add-phone")):
+                    break
+                continuation = session.get(continue_url, headers={"user-agent": user_agent}, allow_redirects=False, timeout=30)
+                continue_url = str(continuation.headers.get("location") or "").strip()
             
             # ─── 处理邮箱 OTP 验证 ──────────────────────────
             if not auth_code:
@@ -1275,6 +1311,49 @@ class AccountService:
             if (payload := self._prepare_account_payload(item)) is not None
         ]
         return self._add_account_payloads(payloads)
+
+    def login_account_items(self, items: list[dict]) -> dict:
+        """登录无 Token 的账号，部分失败时仅返回固定错误，不持久化失败凭据。"""
+        credentials: dict[str, tuple[int, dict]] = {}
+        for index, item in enumerate(items, 1):
+            payload = normalize_credentials(item)
+            credentials[payload["email"].casefold()] = (index, payload)
+        accounts = []
+        errors = []
+        if not credentials:
+            return {"accounts": accounts, "errors": errors}
+
+        def login(entry: tuple[int, dict]) -> tuple[int, dict | None, str | None]:
+            index, payload = entry
+            try:
+                result = self._login_with_password(payload["email"], payload["password"], payload["totp_secret"])
+                token = self._account_payload_token(result)
+                if not result.get("ok") or not token:
+                    return index, None, credential_login_error(result.get("error"))
+                # 只允许登录返回的 Token 字段进入号池，来源沿用 Web 文本导入。
+                account = {**payload, "access_token": token, "source_type": "web"}
+                for key in ("refresh_token", "id_token", "account_id", "expires_at"):
+                    if result.get(key):
+                        account[key] = result[key]
+                return index, account, None
+            except Exception:
+                return index, None, credential_login_error(None)
+
+        with ThreadPoolExecutor(max_workers=min(3, len(credentials))) as executor:
+            for index, account, error in executor.map(login, credentials.values()):
+                if account is not None:
+                    with self._lock:
+                        existing_token = next((
+                            token for token, current in self._accounts.items()
+                            if str(current.get("email") or "").strip().casefold() == account["email"].casefold()
+                            and self.text_channel_for_account(current) == "web"
+                        ), "")
+                    if existing_token and existing_token != account["access_token"]:
+                        self._apply_refreshed_tokens(existing_token, account, "credential_import")
+                    accounts.append(account)
+                else:
+                    errors.append({"account_index": index, "error": f"第 {index} 条三段式账号：{error}"})
+        return {"accounts": accounts, "errors": errors}
 
     def add_accounts(self, tokens: list[str], source_type: str = "web") -> dict:
         tokens = list(dict.fromkeys(token for token in tokens if token))
