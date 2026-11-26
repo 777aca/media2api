@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 MIN_PIXELS = 655_360
 MAX_PIXELS = 8_294_400
 MAX_EDGE = 3840
-DEFAULT_CALIBRATION = {"enabled": False, "worker_url": "http://127.0.0.1:3310", "timeout_secs": 300}
+DEFAULT_CALIBRATION = {"enabled": False, "provider": "worker", "worker_url": "http://127.0.0.1:3310", "timeout_secs": 300}
 
 
 class ImageSizeError(ValueError):
@@ -56,11 +56,13 @@ def contained_dimensions(actual: tuple[int, int], target: tuple[int, int]) -> tu
     return max(1, round(width / height * target[1])), target[1]
 
 
-def calibration_settings(value: object) -> dict[str, object]:
+def calibration_settings(value: object, *, current_fal_key: str = "") -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
     settings = {**DEFAULT_CALIBRATION, **{k: v for k, v in source.items() if k in DEFAULT_CALIBRATION}}
     if not isinstance(settings["enabled"], bool):
         raise ValueError("分辨率校准开关必须为布尔值")
+    if settings["provider"] not in ("worker", "fal"):
+        raise ValueError("超分服务必须为 worker 或 fal")
     url = settings["worker_url"]
     if not isinstance(url, str):
         raise ValueError("超分服务地址必须为 HTTP(S) URL")
@@ -71,4 +73,13 @@ def calibration_settings(value: object) -> dict[str, object]:
     timeout = settings["timeout_secs"]
     if type(timeout) is not int or not 1 <= timeout <= 600:
         raise ValueError("超分超时必须是 1 至 600 的整数秒")
+    key = source.get("fal_api_key", "")
+    if key is not None:
+        if not isinstance(key, str):
+            raise ValueError("fal API 密钥必须为文本")
+        key = key.strip() or current_fal_key
+        if len(key) > 512 or any(not 33 <= ord(character) <= 126 for character in key):
+            raise ValueError("fal API 密钥格式无效")
+        if key:
+            settings["fal_api_key"] = key
     return settings

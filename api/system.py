@@ -97,7 +97,8 @@ def create_router(app_version: str) -> APIRouter:
     async def test_image_calibration(body: dict[str, object], authorization: str | None = Header(default=None)):
         require_admin(authorization)
         try:
-            settings = calibration_settings(body)
+            saved_key = config.get_image_calibration_settings().get("fal_api_key")
+            settings = calibration_settings({**body, "fal_api_key": saved_key})
         except ValueError as exc:
             raise HTTPException(400, detail={"error": str(exc)}) from exc
         return await run_in_threadpool(worker_ready, settings)

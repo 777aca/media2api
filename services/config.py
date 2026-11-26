@@ -17,6 +17,17 @@ CONFIG_FILE = BASE_DIR / "config.json"
 VERSION_FILE = BASE_DIR / "VERSION"
 BACKUP_STATE_FILE = DATA_DIR / "backup_state.json"
 
+_REMOVED_IMAGE_SETTINGS = {
+    "default_upstream_model_name",
+    "default_thinking_effort",
+    "image_settle_enabled",
+    "image_check_before_hit_enabled",
+    "image_settle_secs",
+    "image_remove_conversation_after_result",
+    "image_remove_conversation_always",
+    "image_timeout_retry_secs",
+}
+
 DEFAULT_BACKUP_INCLUDE = {
     "config": True,
     "cpa": True,
@@ -476,43 +487,6 @@ class ConfigStore:
         return bool(value)
 
     @property
-    def image_settle_enabled(self) -> bool:
-        """图片二次确认机制：找到 file_ids 后等待一段时间再次确认。"""
-        value = self.data.get("image_settle_enabled", True)
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    @property
-    def image_check_before_hit_enabled(self) -> bool:
-        """先check再hit：通过轮询确认 file_ids 存在后再返回，而非仅依赖 SSE 事件。"""
-        value = self.data.get("image_check_before_hit_enabled", True)
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    @property
-    def image_remove_conversation_after_result(self) -> bool:
-        """出图成功后异步隐藏 ChatGPT 本地对话记录。"""
-        value = self.data.get("image_remove_conversation_after_result", False)
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    @property
-    def image_remove_conversation_always(self) -> bool:
-        """无论是否出图，画图请求结束后都异步隐藏 ChatGPT 本地对话记录。"""
-        return _normalize_bool(self.data.get("image_remove_conversation_always"), False)
-
-    @property
-    def image_settle_secs(self) -> float:
-        """二次确认等待时间（秒）。"""
-        try:
-            return max(0.5, float(self.data.get("image_settle_secs", 2.0)))
-        except (TypeError, ValueError):
-            return 2.0
-
-    @property
     def auto_remove_invalid_accounts(self) -> bool:
         value = self.data.get("auto_remove_invalid_accounts", False)
         if isinstance(value, str):
@@ -556,15 +530,6 @@ class ConfigStore:
         return str(self.data.get("global_system_prompt") or "").strip()
 
     @property
-    def default_upstream_model_name(self) -> str:
-        return str(self.data.get("default_upstream_model_name") or "gpt-5-5").strip()
-
-    @property
-    def default_thinking_effort(self) -> str:
-        value = str(self.data.get("default_thinking_effort") or "auto").strip().lower()
-        return value if value in {"auto", "standard", "extended", "max"} else "auto"
-
-    @property
     def images_dir(self) -> Path:
         path = DATA_DIR / "images"
         path.mkdir(parents=True, exist_ok=True)
@@ -599,7 +564,7 @@ class ConfigStore:
         return value or "0.0.0"
 
     def get(self) -> dict[str, object]:
-        data = dict(self.data)
+        data = {key: value for key, value in self.data.items() if key not in _REMOVED_IMAGE_SETTINGS}
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
         data["image_retention_days"] = self.image_retention_days
         data["image_retention_hours"] = self.image_retention_hours
@@ -608,8 +573,6 @@ class ConfigStore:
         data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
         data["image_account_concurrency"] = self.image_account_concurrency
         data["image_parallel_generation"] = self.image_parallel_generation
-        data["image_remove_conversation_after_result"] = self.image_remove_conversation_after_result
-        data["image_remove_conversation_always"] = self.image_remove_conversation_always
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["auto_remove_rate_limited_accounts"] = self.auto_remove_rate_limited_accounts
         data["auto_relogin_after_refresh"] = self.auto_relogin_after_refresh
@@ -617,14 +580,14 @@ class ConfigStore:
         data["sensitive_words"] = self.sensitive_words
         data["ai_review"] = self.ai_review
         data["global_system_prompt"] = self.global_system_prompt
-        data["default_upstream_model_name"] = self.default_upstream_model_name
-        data["default_thinking_effort"] = self.default_thinking_effort
         data["backup"] = self.get_backup_settings()
         data["quota_alerts"] = public_quota_alert_settings(self.get_quota_alert_settings())
         data["image_storage"] = self.get_image_storage_settings()
         from services.generation_runtime import queue_settings
         data["image_queue"] = queue_settings(self.data.get("image_queue"))
-        data["image_calibration"] = self.get_image_calibration_settings()
+        calibration = self.get_image_calibration_settings()
+        calibration["fal_key_source"] = "settings" if calibration.pop("fal_api_key", None) else None
+        data["image_calibration"] = calibration
         data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
         data["proxy_runtime"] = self.get_public_proxy_runtime_settings()
         data.pop("third_party_apps", None)
@@ -669,11 +632,20 @@ class ConfigStore:
         if "quota_alerts" in updates:
             updates["quota_alerts"] = quota_alert_settings(updates["quota_alerts"], self.get_quota_alert_settings())
         next_data.update(updates)
+        for key in _REMOVED_IMAGE_SETTINGS:
+            next_data.pop(key, None)
         if "image_queue" in next_data:
             from services.generation_runtime import queue_settings
             next_data["image_queue"] = queue_settings(next_data["image_queue"])
-        if "image_calibration" in next_data:
-            next_data["image_calibration"] = calibration_settings(next_data["image_calibration"])
+        if "image_calibration" in updates:
+            current = self.get_image_calibration_settings()
+            incoming = updates["image_calibration"]
+            if not isinstance(incoming, dict):
+                raise ValueError("图片分辨率校准设置必须为对象")
+            current_key = str(current.pop("fal_api_key", ""))
+            next_data["image_calibration"] = calibration_settings(
+                {**current, **incoming}, current_fal_key=current_key,
+            )
         if "backup" in next_data:
             next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
         if "image_storage" in next_data:

@@ -14,7 +14,6 @@ import { ProxyRuntimeCard } from "./components/proxy-runtime-card";
 import { SettingsHeader } from "./components/settings-header";
 import { SettingsSection } from "./components/settings-section";
 import { ImageQueueSettings } from "./components/image-queue-settings";
-import { UserKeysCard } from "./components/user-keys-card";
 import { useSettingsStore } from "./store";
 import { GrokSettings } from "@/components/grok-settings";
 import { QuotaAlertSettingsCard } from "./components/quota-alert-settings";
@@ -90,18 +89,15 @@ function SettingsPageContent() {
           <ApiDocsCard />
         </TabsContent>
         <TabsContent value="advanced" className="space-y-4">
-          <SettingsSection title="图片生成与调度" description="生成参数、图片有效期、分辨率校准与并发队列。">
+          <SettingsSection title="图片生成与调度" description="分辨率校准、上游出图等待与并发队列。">
             <ConfigCard section="images" />
             <ImageQueueSettings />
           </SettingsSection>
-          <SettingsSection title="图片存储" description="按需使用 R2 / S3 或 WebDAV 保存图片。">
+          <SettingsSection title="图片存储" description="配置图片访问地址及 R2 / S3 或 WebDAV 存储。">
             <ConfigCard section="storage" />
           </SettingsSection>
           <SettingsSection title="请求与日志" description="日志级别、附加指令、敏感词与 AI 审核。">
             <ConfigCard section="requests" />
-          </SettingsSection>
-          <SettingsSection title="调用密钥" description="需要隔离不同客户端的调用额度时，创建独立密钥。">
-            <UserKeysCard />
           </SettingsSection>
         </TabsContent>
       </Tabs>

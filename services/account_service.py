@@ -973,6 +973,12 @@ class AccountService:
         with self._lock:
             return list(self._accounts)
 
+    def _has_image_slot_locked(self, account: dict, *, recovering: bool = False) -> bool:
+        limit = config.image_account_concurrency
+        if not recovering:
+            limit = min(limit, int(account.get("quota") or 0))
+        return self._image_inflight.get(account["access_token"], 0) < limit
+
     def _reserve_image_candidate_locked(self, candidates: list[dict]) -> str:
         selected = self._scheduler.select(candidates, group="image")
         token = selected["access_token"]
@@ -1007,7 +1013,7 @@ class AccountService:
                         block = blocks.get(key) or {}
                         if block and (block.get("until") is None or float(block.get("until") or 0) > time.time()):
                             eligible = False
-                if eligible and int(self._image_inflight.get(item["access_token"], 0)) < max(1, int(config.image_account_concurrency or 1)):
+                if eligible and self._has_image_slot_locked(item, recovering=bool(preferred_id)):
                     candidates.append(item)
             if candidates:
                 return self._reserve_image_candidate_locked(candidates)
@@ -1074,11 +1080,10 @@ class AccountService:
             source_type: str | None = None,
             plan_types: set[str] | tuple[str, ...] | None = None,
     ) -> list[str]:
-        max_concurrency = max(1, int(config.image_account_concurrency or 1))
         return [
             token
             for token in self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)
-            if int(self._image_inflight.get(token, 0)) < max_concurrency
+            if self._has_image_slot_locked(self._accounts[token])
         ]
 
     def _acquire_next_candidate_token(
@@ -1530,37 +1535,39 @@ class AccountService:
     def mark_image_result(self, access_token: str, success: bool, *, release_slot: bool = True) -> dict | None:
         if not access_token:
             return None
-        if release_slot:
-            self.release_image_slot(access_token)
-        with self._lock:
-            access_token = self._resolve_access_token_locked(access_token)
-            current = self._accounts.get(access_token)
-            if current is None:
-                return None
-            next_item = dict(current)
-            next_item["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if success:
-                next_item["success"] = int(next_item.get("success") or 0) + 1
-                next_item["quota"] = max(0, int(next_item.get("quota") or 0) - 1)
-                if next_item["quota"] == 0:
-                    next_item["status"] = "限流"
-                    next_item["restore_at"] = next_item.get("restore_at") or None
-                elif next_item.get("status") == "限流":
-                    next_item["status"] = "正常"
-            else:
-                next_item["fail"] = int(next_item.get("fail") or 0) + 1
-            account = self._normalize_account(next_item)
-            if account is None:
-                return None
-            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
-                self._accounts.pop(access_token, None)
+        try:
+            with self._lock:
+                access_token = self._resolve_access_token_locked(access_token)
+                current = self._accounts.get(access_token)
+                if current is None:
+                    return None
+                next_item = dict(current)
+                next_item["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if success:
+                    next_item["success"] = int(next_item.get("success") or 0) + 1
+                    next_item["quota"] = max(0, int(next_item.get("quota") or 0) - 1)
+                    if next_item["quota"] == 0:
+                        next_item["status"] = "限流"
+                        next_item["restore_at"] = next_item.get("restore_at") or None
+                    elif next_item.get("status") == "限流":
+                        next_item["status"] = "正常"
+                else:
+                    next_item["fail"] = int(next_item.get("fail") or 0) + 1
+                account = self._normalize_account(next_item)
+                if account is None:
+                    return None
+                if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
+                    self._accounts.pop(access_token, None)
+                    self._save_accounts()
+                    log_service.add(LOG_TYPE_ACCOUNT, "自动移除限流账号", {"token": anonymize_token(access_token)})
+                    return None
+                self._accounts[access_token] = account
                 self._save_accounts()
-                log_service.add(LOG_TYPE_ACCOUNT, "自动移除限流账号", {"token": anonymize_token(access_token)})
-                return None
-            self._accounts[access_token] = account
-            self._save_accounts()
-            return dict(account)
-        return None
+                return dict(account)
+        finally:
+            if release_slot:
+                # Keep the slot occupied until the updated quota is visible to the scheduler.
+                self.release_image_slot(access_token)
 
     def fetch_remote_info(
         self,

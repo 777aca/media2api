@@ -6,11 +6,14 @@ import { LoaderCircle } from "lucide-react";
 export const activityRowClass = "bg-blue-50 hover:bg-blue-100 dark:bg-blue-950 dark:hover:bg-blue-900";
 export const activityActionClass = "bg-blue-50 group-hover:bg-blue-100 dark:bg-blue-950 dark:group-hover:bg-blue-900";
 
-export function AccountActivityBadge({ count, kind = "image" }: { count: number; kind?: "image" | "request" }) {
+export function AccountActivityBadge({ count, kind = "image", quotaLimited = false }: {
+  count: number; kind?: "image" | "request"; quotaLimited?: boolean;
+}) {
   if (!(count > 0)) return null;
+  const label = kind === "request" ? `处理中 · ${count} 个请求` : `${quotaLimited ? "已接任务" : "生成中"} · ${count} 张`;
   return <span role="status" className="mt-1 inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-blue-300 bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-800 dark:border-blue-700 dark:bg-blue-900 dark:text-blue-100">
     <LoaderCircle aria-hidden="true" className="size-3.5 motion-safe:animate-spin" />
-    {kind === "image" ? `生成中 · ${count} 张` : `处理中 · ${count} 个请求`}
+    {label}
   </span>;
 }
 

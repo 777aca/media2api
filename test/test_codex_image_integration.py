@@ -98,7 +98,6 @@ class WebImage25Fixture:
         self.generate = mock.patch.object(conversation, "stream_image_outputs", side_effect=self.web_outputs).start()
         self.old_direct = mock.patch.object(codex_image_service, "generate_codex_image", side_effect=AssertionError("direct image route used")).start()
         self.old_codex = mock.patch.object(conversation, "stream_codex_image_outputs", side_effect=AssertionError("legacy Codex image route used")).start()
-        mock.patch.object(conversation, "_remove_image_conversation_later").start()
         from services.generation_runtime import GenerationRuntime, DEFAULT_QUEUE
         self.runtime = GenerationRuntime(self.path, settings_getter=lambda: {**DEFAULT_QUEUE, "queue_timeout_seconds": 1})
         mock.patch("services.generation_runtime._runtime", self.runtime).start()

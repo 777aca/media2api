@@ -167,7 +167,14 @@ export type ProxyRuntimeResponse = {
   status: ProxyRuntimeStatus;
 };
 
-export type ImageCalibrationSettings = { enabled: boolean; worker_url: string; timeout_secs: number };
+export type ImageCalibrationSettings = {
+  enabled: boolean;
+  provider?: "worker" | "fal";
+  worker_url: string;
+  timeout_secs: number;
+  fal_key_source?: "settings" | null;
+  fal_api_key?: string | null;
+};
 
 export type SettingsConfig = {
   image_queue?: import("./generation-runtime").QueueSettings;
@@ -175,8 +182,6 @@ export type SettingsConfig = {
   proxy: string;
   base_url?: string;
   global_system_prompt?: string;
-  default_upstream_model_name?: string;
-  default_thinking_effort?: "auto" | "standard" | "extended" | "max";
   sensitive_words?: string[];
   ai_review?: {
     enabled?: boolean;
@@ -191,12 +196,6 @@ export type SettingsConfig = {
   image_poll_timeout_secs?: number | string;
   image_account_concurrency?: number | string;
   image_parallel_generation?: boolean;
-  image_settle_enabled?: boolean;
-  image_check_before_hit_enabled?: boolean;
-  image_remove_conversation_after_result?: boolean;
-  image_remove_conversation_always?: boolean;
-  image_settle_secs?: number | string;
-  image_timeout_retry_secs?: number | string;
   auto_remove_invalid_accounts?: boolean;
   auto_remove_rate_limited_accounts?: boolean;
   auto_relogin_after_refresh?: boolean;
@@ -339,20 +338,6 @@ export type LoginResponse = {
   role: AuthRole;
   subject_id: string;
   name: string;
-};
-
-export type UserKey = {
-  image_quota_limit?: number | null;
-  image_concurrency_limit?: number | null;
-  image_quota_used?: number;
-  image_quota_reserved?: number;
-  image_quota_remaining?: number | null;
-  id: string;
-  name: string;
-  role: "user";
-  enabled: boolean;
-  created_at: string | null;
-  last_used_at: string | null;
 };
 
 export async function login(authKey: string) {
@@ -566,13 +551,6 @@ export async function fetchImageTasks(ids: string[]) {
   return httpRequest<ImageTaskListResponse>(`/api/image-tasks?${params.toString()}`);
 }
 
-export async function resumeImagePoll(taskId: string, extraTimeoutSecs = 30) {
-  return httpRequest<ImageTask>(`/api/image-tasks/${encodeURIComponent(taskId)}/resume-poll`, {
-    method: "POST",
-    body: { extra_timeout_secs: extraTimeoutSecs },
-  });
-}
-
 export async function fetchSettingsConfig() {
   return httpRequest<{ config: SettingsConfig }>("/api/settings");
 }
@@ -735,30 +713,6 @@ export async function deleteSystemLogs(ids: string[]) {
   return httpRequest<{ removed: number }>("/api/logs/delete", {
     method: "POST",
     body: { ids },
-  });
-}
-
-export async function fetchUserKeys() {
-  return httpRequest<{ items: UserKey[] }>("/api/auth/users");
-}
-
-export async function createUserKey(name: string, limits: { image_quota_limit?: number | null; image_concurrency_limit?: number | null } = {}) {
-  return httpRequest<{ item: UserKey; key: string; items: UserKey[] }>("/api/auth/users", {
-    method: "POST",
-    body: { name, ...limits },
-  });
-}
-
-export async function updateUserKey(keyId: string, updates: { enabled?: boolean; name?: string; key?: string; image_quota_limit?: number | null; image_concurrency_limit?: number | null }) {
-  return httpRequest<{ item: UserKey; items: UserKey[] }>(`/api/auth/users/${keyId}`, {
-    method: "POST",
-    body: updates,
-  });
-}
-
-export async function deleteUserKey(keyId: string) {
-  return httpRequest<{ items: UserKey[] }>(`/api/auth/users/${keyId}`, {
-    method: "DELETE",
   });
 }
 
@@ -991,7 +945,10 @@ export async function testProxyClearance(targetUrl?: string) {
 }
 
 export async function testImageCalibration(settings: ImageCalibrationSettings) {
-  const value: unknown = await httpRequest("/api/image-calibration/test", { method: "POST", body: settings });
+  const { enabled, provider, worker_url, timeout_secs } = settings;
+  const value: unknown = await httpRequest("/api/image-calibration/test", {
+    method: "POST", body: { enabled, provider, worker_url, timeout_secs },
+  });
   if (typeof value !== "object" || value === null || !("ok" in value) || typeof value.ok !== "boolean" || !("message" in value) || typeof value.message !== "string") throw new Error("超分检查返回格式错误");
   return { ok: value.ok, message: value.message };
 }

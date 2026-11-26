@@ -1,6 +1,10 @@
 # 图片尺寸与分辨率校准
 
-网页生图、编辑、Images API、图片流式最终结果和任务续轮询共用结果校准。默认关闭，管理员在「设置 → 基础配置 → 图片分辨率校准」启用并保存后生效。仅处理新生成的结果，已有图片不变。
+网页生图、编辑、Images API、图片流式最终结果和任务续轮询共用结果校准。默认关闭，管理员在「系统设置 → 高级设置 → 图片生成与调度」启用「图片分辨率校准」并保存后生效。「超分服务与超时」可选择自托管 Worker 或 fal.ai。校准仅处理新生成的结果。
+
+「图片生成与调度 → 生图调度」中的「等待上游出图」对应 `image_poll_timeout_secs`，默认 120 秒，用于 ChatGPT 生图响应和常规结果轮询。「图片存储」中的「图片访问地址」对应 `base_url`，留空时默认使用请求地址生成图片链接。
+
+`gpt-image-2` 的网页通道使用固定上游模型 `gpt-5-5`。生图任务拿到图片标识后直接尝试读取结果，生成的 ChatGPT 会话由上游正常保留。旧版的上游模型、默认思考强度、图片二次确认和会话隐藏字段在读取时忽略，下次保存设置时从配置文件清理。
 
 ## 尺寸规则
 
@@ -39,13 +43,28 @@ Images API 的 `data[]` 与任务 `data[]` 增加以下可选字段；Responses 
 {
   "image_calibration": {
     "enabled": false,
+    "provider": "worker",
     "worker_url": "http://127.0.0.1:3310",
     "timeout_secs": 300
   }
 }
 ```
 
-`timeout_secs` 为 1～600 的整数。地址不接受 URL 内嵌凭据；鉴权来自环境变量 `SUPER_RESOLUTION_WORKER_SECRET`。`POST /api/image-calibration/test` 接收上述 `image_calibration` 对象、仅检查就绪状态，不保存配置、不执行推理，必须有管理员权限。
+`timeout_secs` 为 1～600 的整数。`provider` 缺省时使用 `worker`。Worker 的鉴权来自主 API 环境变量 `SUPER_RESOLUTION_WORKER_SECRET`。`POST /api/image-calibration/test` 仅供管理员检查当前表单配置。Worker 模式检查服务就绪状态，fal 模式检查主 API 是否已配置密钥。检查免费，密钥有效性在实际推理时验证。
+
+## 使用 fal.ai
+
+在「超分服务与超时」选择「fal.ai · Real-ESRGAN」，填写出现的「fal API 密钥」，启用校准并保存。密钥保存在主 API 的 `config.json` 中，保存后立即生效。留空会保留现有密钥，勾选「清除已保存的密钥」并保存后，fal 超分需重新配置密钥才能使用。只有达到 AI 放大阈值的原图才发送给 fal。
+
+管理员也可通过 `POST /api/settings` 提交 `image_calibration.fal_api_key`。省略或提交空白文本会保留现有密钥，提交 `null` 会清除。设置接口通过 `fal_key_source` 返回 `settings`（已保存）或 `null`（待配置）。fal 检查按钮读取已保存的配置。此前只通过环境变量配置的部署，需在设置页保存密钥。
+
+每张图提交一个队列任务。主 API 按目标框计算倍率，上限为 4，下载结果后在本地恢复透明通道。超时会尝试取消已知任务并返回原图，已开始的推理可能仍然计费。成功下载后，应用的 info 日志事件 `fal_esrgan_completed` 包含请求 ID 和平台返回的推理秒数 `inference_time`。可用请求 ID 核对 fal 用量。[模型接口](https://fal.ai/models/fal-ai/esrgan/api) · [队列状态](https://fal.ai/docs/api-reference/inference-api/queue/status)
+
+保存密钥后，从仓库根目录执行以下命令。脚本读取本地 `config.json`，向 fal 付费提交一张合成测试图，校验 576×1024 → 2160×3840，并分别输出整次耗时和平台推理秒数。可选参数 `--output result.png` 保存结果。
+
+```powershell
+.venv\Scripts\python.exe -m scripts.check_fal_esrgan
+```
 
 ## Windows 本地启动
 
@@ -95,12 +114,15 @@ Worker 使用 ONNX Runtime CPU、默认 2 个计算线程、单并发和最多 8
 
 排障先检查 `/health/ready`（带 `x-super-resolution-secret` 请求头）与 Worker 日志。应用日志记录校准方式、源/目标尺寸、耗时和失败类别，不记录图片字节或密钥。关闭后台总开关即可立即停止新请求的校准，不影响原有生图通道。
 
+- **HTTP 401** 表示密钥校验失败。确认 `app` 和 `super-resolution` 都从同一份部署配置收到 `SUPER_RESOLUTION_WORKER_SECRET`，密钥首尾避免空白。修改后用原部署的 Compose 文件和环境来源重新执行 `up`，让 Compose 应用新的容器环境变量。使用上文两份 Compose 文件和已有镜像时，运行 `docker compose -f docker-compose.yml -f docker-compose.super-resolution.yml up -d --no-build --pull never app super-resolution`，再点击「检查超分连接」。
+- **HTTP 503** 表示 Worker 未加载模型。检查模型文件、只读挂载及 `REALESR_MODEL_PATH`。
+
 ## 验证
 
 普通隔离回归不需要模型，不连接真实服务：
 
 ```powershell
-.venv\Scripts\python.exe scripts\run_model_catalog_tests.py test.test_image_calibration test.test_super_resolution_memory
+.venv\Scripts\python.exe scripts\run_model_catalog_tests.py test.test_image_calibration test.test_fal_esrgan test.test_super_resolution_memory
 ```
 
 真实模型验收仅使用合成渐变图，验证 2K/4K、透明度和分块接缝，不调用生图上游：

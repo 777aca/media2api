@@ -1,12 +1,26 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { filterPoolRows, grokStatus, parseGrokAccounts, partitionPoolRows, poolRows } from "./account-pool";
+import { filterPoolRows, grokStatus, mergeImageAccountActivity, parseGrokAccounts, partitionPoolRows, poolRows } from "./account-pool";
 import type { Account } from "./api";
 
 const openai: Account[] = [
   { access_token: "same-id", type: "Plus", email: "alice@example.test", status: "正常", quota: 4, success: 0, fail: 0 },
   { access_token: "codex-test", type: "Free", source_type: " CODEX ", email: "bob@example.test", status: "异常", quota: 0, success: 0, fail: 0 },
 ];
+
+test("image activity polling applies quota, status and in-flight count from the same account snapshot", () => {
+  const current = [{ ...openai[0], quota: 0, status: "限流" as const, image_inflight: 0 }, openai[1]];
+  const fresh = { ...openai[0], image_inflight: 1, email: "stale@example.test", restore_at: null };
+  const updated = mergeImageAccountActivity(current, [fresh, { ...fresh, access_token: "deleted-token" }]);
+  assert.deepEqual(updated, [{ ...openai[0], image_inflight: 1, restore_at: null }, openai[1]]);
+  assert.equal(updated[1], current[1]);
+
+  const completed = { ...fresh, image_inflight: 0, quota: 0, status: "限流", restore_at: "2026-11-26T15:00:00Z" };
+  const settled = mergeImageAccountActivity(updated, [completed]);
+  assert.deepEqual(settled[0], { ...current[0], restore_at: completed.restore_at });
+  assert.equal(mergeImageAccountActivity(settled, [completed]), settled);
+  assert.equal(mergeImageAccountActivity(settled, [{ ...completed, image_inflight: -1 }]), settled);
+});
 
 test("Grok request counts accept only nonnegative integers and default old responses to zero", () => {
   for (const [value, expected] of [[3, 3], [0, 0], [undefined, 0], [-1, 0], [1.5, 0], ["2", 0], [Infinity, 0]] as const) {

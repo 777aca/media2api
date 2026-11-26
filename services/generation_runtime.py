@@ -359,7 +359,6 @@ class GenerationRuntime:
                 self.recovery.finish_failed(task_id, "image_result_recovery_expired", "自动读取原结果已超过 10 分钟")
             else:
                 self.store.finish(task_id, status="success", output=serialized)
-                self._cleanup_conversation(self.store.task(task_id, include_output=False))
         except RetryImage:
             self.store.requeue_attempt(task_id)
         except Exception as exc:
@@ -390,27 +389,6 @@ class GenerationRuntime:
             if row["reservation"] < 1:
                 raise GenerationRuntimeError("任务额度预占不存在", "image_quota_reservation_missing", 409)
         self.store.checkpoint(task_id, **values)
-
-    def _cleanup_conversation(self, row: dict) -> None:
-        if row.get("channel") == "grok_web":
-            return
-        if not row["conversation_id"]:
-            return
-        from services.config import config
-        if not (config.image_remove_conversation_after_result or config.image_remove_conversation_always):
-            return
-        try:
-            from services.account_service import account_service
-            from services.protocol.conversation import OpenAIBackendAPI, _remove_image_conversation_later
-            account = next((item for item in account_service.list_accounts() if item.get("pool_account_id") == row["account_id"]), None)
-            if account:
-                backend = OpenAIBackendAPI(access_token=account["access_token"])
-                try:
-                    _remove_image_conversation_later(backend, row["conversation_id"], success=True)
-                finally:
-                    backend.close()
-        except Exception:
-            pass
 
     def _log_task(self, task_id: str, phase: str) -> None:
         try:

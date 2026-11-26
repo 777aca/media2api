@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 import api.accounts as accounts_module
 from services.account_service import AccountService
 from services.config import config
+from services.generation_errors import GenerationRuntimeError
 from services.model_service import ModelRoute
 from services.storage.database_storage import DatabaseStorageBackend
 from services.storage.json_storage import JSONStorageBackend
@@ -112,6 +113,40 @@ class AccountSchedulingTests(SchedulingTestCase):
         self.service.release_image_slot(first)
         self.assertEqual(self.image(), "preferred")
         self.service.release_image_slot(second)
+
+    def test_last_image_quota_limits_both_dispatch_paths(self) -> None:
+        self.add("last", quota=1, priority=10)
+        request = {"model": "gpt-image-2", "channel": "web", "excluded_ids": set()}
+        with mock.patch.dict(config.data, {"image_account_concurrency": 3}):
+            self.assertEqual(self.service.try_acquire_image_token(**request), "last")
+            self.assertIsNone(self.service.try_acquire_image_token(**request))
+            with self.assertRaises(GenerationRuntimeError) as busy:
+                self.service.get_available_access_token()
+            self.assertEqual(busy.exception.code, "image_account_busy")
+
+            self.add("fallback", quota=2)
+            self.assertEqual(self.service.get_available_access_token(), "fallback")
+            self.assertEqual(self.service.try_acquire_image_token(**request), "fallback")
+            self.assertIsNone(self.service.try_acquire_image_token(**request))
+
+            last = self.service.mark_image_result("last", success=True)
+            self.assertEqual((last["quota"], last["status"]), (0, "限流"))
+            self.assertIsNone(self.service.try_acquire_image_token(**request))
+            self.service.release_image_slot("fallback")
+            self.assertEqual(self.service.try_acquire_image_token(**request), "fallback")
+
+    def test_account_with_no_quota_can_read_previous_image_using_a_slot(self) -> None:
+        self.add("used", quota=0, status="限流")
+        request = {"model": "gpt-image-2", "channel": "web", "excluded_ids": set()}
+        with self.assertRaises(GenerationRuntimeError) as rejected:
+            self.service.try_acquire_image_token(**request)
+        self.assertEqual(rejected.exception.code, "image_account_unavailable")
+
+        account_id = self.service.get_account("used")["pool_account_id"]
+        self.assertEqual(self.service.try_acquire_image_token(**request, preferred_id=account_id), "used")
+        self.assertIsNone(self.service.try_acquire_image_token(**request, preferred_id=account_id))
+        self.service.release_image_slot("used")
+        self.assertEqual(self.service.list_accounts()[0]["image_inflight"], 0)
 
     def test_unavailable_and_mismatched_accounts_cannot_override_image_filters(self) -> None:
         self.add("empty", priority=100, quota=0)

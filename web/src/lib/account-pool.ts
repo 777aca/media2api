@@ -45,6 +45,31 @@ export function grokStatus(a: GrokAccount, now: number): AccountStatus {
   return "正常";
 }
 
+export function mergeImageAccountActivity(current: Account[], snapshot: unknown): Account[] {
+  if (!Array.isArray(snapshot)) return current;
+
+  const updates = new Map<string, Pick<Account, "quota" | "status" | "restore_at" | "image_inflight">>();
+  for (const value of snapshot) {
+    const { access_token, quota, status, restore_at, image_inflight } = record(value);
+    if (typeof access_token !== "string" || !access_token) continue;
+    if (typeof quota !== "number" || !Number.isSafeInteger(quota) || quota < 0) continue;
+    if (typeof image_inflight !== "number" || !Number.isSafeInteger(image_inflight) || image_inflight < 0) continue;
+    if (status !== "正常" && status !== "限流" && status !== "异常" && status !== "禁用") continue;
+    if (restore_at != null && typeof restore_at !== "string") continue;
+    updates.set(access_token, { quota, status, restore_at: restore_at ?? null, image_inflight });
+  }
+
+  let changed = false;
+  const next = current.map(account => {
+    const update = updates.get(account.access_token);
+    if (!update || (account.quota === update.quota && account.status === update.status
+      && (account.restore_at ?? null) === update.restore_at && account.image_inflight === update.image_inflight)) return account;
+    changed = true;
+    return { ...account, ...update };
+  });
+  return changed ? next : current;
+}
+
 type PoolFields = { key: string; channel: PoolChannel; name: string; tier: string; status: AccountStatus };
 export type PoolRow = PoolFields & (
   | { kind: "openai"; account: Account }

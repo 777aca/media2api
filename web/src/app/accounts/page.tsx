@@ -2,8 +2,8 @@
 
 import { clearImageCooldown } from "@/lib/generation-runtime";
 import { GrokAccountRow, grokAccountPath, useGrokAccounts, fetchGrokActivity } from "@/components/grok-accounts";
-import { AccountActivityBadge, activityRowClass, activityActionClass, mergeActivity, useActivityPolling } from "@/components/account-activity";
-import { channelLabels, filterPoolRows, partitionPoolRows, poolRows, type PoolRow } from "@/lib/account-pool";
+import { AccountActivityBadge, activityRowClass, activityActionClass, useActivityPolling } from "@/components/account-activity";
+import { channelLabels, filterPoolRows, mergeImageAccountActivity, partitionPoolRows, poolRows, type PoolRow } from "@/lib/account-pool";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
@@ -310,7 +310,7 @@ function AccountsPageContent() {
     || refreshingTokens.size > 0 || importOpen || Boolean(editingAccount);
   const applyImageActivity = useCallback((snapshot: Account[]) => {
     setAccounts(current => current === accounts
-      ? mergeActivity(current, snapshot, item => item.access_token, "image_inflight") : current);
+      ? mergeImageAccountActivity(current, snapshot) : current);
   }, [accounts]);
   useActivityPolling({ fetch: fetchImageActivity, apply: applyImageActivity, paused: activityPaused });
   useActivityPolling({ fetch: fetchGrokActivity, apply: grok.applyActivity, paused: activityPaused });
@@ -1248,7 +1248,7 @@ function AccountsPageContent() {
                               <Copy className="size-4" />
                             </button>
                           </div>
-                          <AccountActivityBadge count={inflight} />
+                          <AccountActivityBadge count={inflight} quotaLimited={account.quota <= 0 || account.status === "限流"} />
                         </td>
                         <td className="px-4 py-3">
                           <Badge variant="secondary" className="rounded-md bg-stone-100 text-stone-700">
@@ -1323,7 +1323,7 @@ function AccountsPageContent() {
                                 }
                                 title={
                                   inflight > 0
-                                    ? "当前正在生成的图片数"
+                                    ? "已接手且尚未处理完成的图片数"
                                     : "当前无在途生图任务"
                                 }
                               >

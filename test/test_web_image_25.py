@@ -48,10 +48,12 @@ class WebImage25RequestTests(unittest.TestCase):
         response = backend.session.post.return_value
         response.status_code = 200
         response.json.return_value = {"conduit_token": "synthetic-conduit"}
+        models = {model: model for model in MODELS}
+        models["gpt-image-2"] = "gpt-5-5"
         with mock.patch.object(backend, "_image_headers", return_value={}), \
                 mock.patch.dict(config.data, {"default_upstream_model_name": "gpt-5-5-extended",
                                               "default_thinking_effort": "max"}):
-            for model in MODELS:
+            for model, upstream_model in models.items():
                 with self.subTest(model=model):
                     backend.session.post.reset_mock()
                     conduit = backend._prepare_image_conversation("draw", mock.Mock(), model)
@@ -63,11 +65,14 @@ class WebImage25RequestTests(unittest.TestCase):
                     ])
                     for call in calls:
                         payload = call.kwargs["json"]
-                        self.assertEqual(payload["model"], model)
+                        self.assertEqual(payload["model"], upstream_model)
                         self.assertEqual(payload["system_hints"], ["picture_v2"])
                         self.assertNotIn("thinking_effort", payload)
-            self.assertEqual(backend._image_model_settings("gpt-image-2"), ("gpt-5-5", "extended"))
-            self.assertEqual(backend._image_model_settings("codex-gpt-image-2")[0], "codex-gpt-image-2")
+            self.assertEqual(backend._image_upstream_model("codex-gpt-image-2"), "codex-gpt-image-2")
+            payload = backend._conversation_payload([], "auto", "Asia/Shanghai")
+            self.assertNotIn("thinking_effort", payload)
+            payload = backend._conversation_payload([], "auto", "Asia/Shanghai", thinking_effort="high")
+            self.assertEqual(payload["thinking_effort"], "high")
 
     def test_http_errors_keep_safe_status_and_distinguish_explicit_model_denial(self) -> None:
         for status, payload, code in (
@@ -98,7 +103,6 @@ class WebImage25RequestTests(unittest.TestCase):
 
                 with mock.patch.object(conversation, "OpenAIBackendAPI", return_value=backend), \
                         mock.patch.object(conversation, "stream_image_outputs", side_effect=fail) as generate, \
-                        mock.patch.object(conversation, "_remove_image_conversation_later"), \
                         mock.patch.object(conversation.account_service, "acquire_governed_image_token", return_value="private-token"), \
                         mock.patch.object(conversation.account_service, "get_account", return_value={}), \
                         mock.patch.object(conversation.account_service, "refresh_access_token") as refresh, \

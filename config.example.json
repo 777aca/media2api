@@ -8,6 +8,7 @@
   },
   "image_calibration": {
     "enabled": false,
+    "provider": "worker",
     "worker_url": "http://127.0.0.1:3310",
     "timeout_secs": 300
   },
@@ -49,8 +50,6 @@
   "base_url": "",
   "sensitive_words": [],
   "global_system_prompt": "",
-  "default_upstream_model_name": "gpt-5-5",
-  "default_thinking_effort": "auto",
   "ai_review": {
     "enabled": false,
     "base_url": "",
@@ -113,12 +112,7 @@
     "drop_adjacent_duplicates": true,
     "drop_assistant_history": false
   },
-  "image_settle_enabled": false,
-  "image_check_before_hit_enabled": false,
-  "image_settle_secs": 2,
   "auto_relogin_after_refresh": false,
-  "image_timeout_retry_secs": 30,
-  "image_remove_conversation_after_result": true,
   "image_queue": {
     "global_concurrency": 8,
     "key_concurrency": 4,

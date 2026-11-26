@@ -122,7 +122,7 @@ class ExecutionEvidenceTests(unittest.TestCase):
         backend.session.post.return_value.json.return_value = {'file_id': 'file-synthetic', 'upload_url': 'https://example.invalid/?token=SECRET'}
         backend.session.put.return_value.status_code = 200
         evidence = {}
-        with diagnostic_scope(evidence), mock.patch.object(backend, '_headers', return_value={}), mock.patch.object(backend, '_image_headers', return_value={}), mock.patch.object(backend, '_image_model_settings', return_value=('actual-backend', '')):
+        with diagnostic_scope(evidence), mock.patch.object(backend, '_headers', return_value={}), mock.patch.object(backend, '_image_headers', return_value={}), mock.patch.object(backend, '_image_upstream_model', return_value='actual-backend'):
             ref = backend._upload_image(base64.b64encode(image.getvalue()).decode())
             backend._start_image_generation('draw', mock.Mock(), 'secret-conduit', 'alias', [ref])
         self.assertEqual(evidence['actual_model'], 'actual-backend')

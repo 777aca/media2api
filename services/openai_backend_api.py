@@ -111,7 +111,6 @@ FILE_ID_RE = re.compile(r"\b(file[-_](?!service\b)[A-Za-z0-9_-]+)\b")
 # 真正的图片文件 ID 格式：file_00000000 + 24位十六进制字符（共32字符）
 REAL_IMAGE_FILE_ID_RE = re.compile(r"\bfile_00000000[a-f0-9]{24}\b")
 SEDIMENT_ID_RE = re.compile(r"sediment://([A-Za-z0-9_-]+)")
-IMAGE_POLL_SETTLE_SECS = 2.0
 CODEX_RESPONSES_INSTRUCTIONS = (
     "Use the image_generation tool to create exactly one image for the user's request. "
     "Return the generated image result."
@@ -566,29 +565,19 @@ class OpenAIBackendAPI:
                 "screen_width": 2560,
             },
         }
-        normalized_effort = self._normalize_thinking_effort(thinking_effort or config.default_thinking_effort)
+        normalized_effort = self._normalize_thinking_effort(thinking_effort)
         if normalized_effort:
             payload["thinking_effort"] = normalized_effort
         return payload
 
-    def _image_model_settings(self, model: str) -> tuple[str, str]:
-        """把标准图片模型名映射为上游模型及思考强度。"""
+    def _image_upstream_model(self, model: str) -> str:
+        """把图片入口映射为网页通道的上游模型名。"""
         _, base_model = split_image_model(model)
-        if not base_model:
-            return "auto", ""
-        if base_model in all_web_image_models():
-            # 网页会话保留完整图片型号，不套用兼容入口的会话模型与思考参数。
-            return base_model, ""
         if base_model == "gpt-image-2":
-            upstream_model = config.default_upstream_model_name
-        elif base_model == CODEX_IMAGE_MODEL:
-            upstream_model = base_model
-        else:
-            return "auto", ""
-        model_name, separator, suffix = upstream_model.rpartition("-")
-        if separator and suffix.lower() in {"standard", "extended", "max"}:
-            return model_name, suffix.lower()
-        return upstream_model, self._normalize_thinking_effort(config.default_thinking_effort)
+            return "gpt-5-5"
+        if base_model and (base_model == CODEX_IMAGE_MODEL or base_model in all_web_image_models()):
+            return base_model
+        return "auto"
 
     def _image_headers(self, path: str, requirements: ChatRequirements, conduit_token: str = "", accept: str = "*/*") -> \
             Dict[str, str]:
@@ -885,12 +874,11 @@ class OpenAIBackendAPI:
     ) -> str:
         """为图片生成准备 conduit token。"""
         path = "/backend-api/f/conversation/prepare"
-        upstream_model, thinking_effort = self._image_model_settings(model)
         payload = {
             "action": "next",
             "fork_from_shared_post": False,
             "parent_message_id": new_uuid(),
-            "model": upstream_model,
+            "model": self._image_upstream_model(model),
             "client_prepare_state": "success",
             "timezone_offset_min": -480,
             "timezone": "Asia/Shanghai",
@@ -905,8 +893,6 @@ class OpenAIBackendAPI:
             "supported_encodings": ["v1"],
             "client_contextual_info": {"app_name": "chatgpt.com"},
         }
-        if thinking_effort:
-            payload["thinking_effort"] = thinking_effort
         if attachment_mime_types:
             payload["attachment_mime_types"] = attachment_mime_types
         response = self.session.post(
@@ -999,7 +985,6 @@ class OpenAIBackendAPI:
     def _start_image_generation(self, prompt: str, requirements: ChatRequirements, conduit_token: str, model: str,
                                 references: Optional[list[Dict[str, Any]]] = None) -> requests.Response:
         """启动图片生成或编辑的 SSE 请求。"""
-        upstream_model, thinking_effort = self._image_model_settings(model)
         references = references or []
         parts = [{
             "content_type": "image_asset_pointer",
@@ -1037,7 +1022,7 @@ class OpenAIBackendAPI:
                 "metadata": metadata,
             }],
             "parent_message_id": new_uuid(),
-            "model": upstream_model,
+            "model": self._image_upstream_model(model),
             "client_prepare_state": "sent",
             "timezone_offset_min": -480,
             "timezone": "Asia/Shanghai",
@@ -1059,8 +1044,6 @@ class OpenAIBackendAPI:
             "paragen_cot_summary_display_override": "allow",
             "force_parallel_switch": "auto",
         }
-        if thinking_effort:
-            payload["thinking_effort"] = thinking_effort
         path = "/backend-api/f/conversation"
         checkpoint("submitting")
         upstream_request(payload["model"], "web", getattr(self, "account", None), input_count=len(references))
@@ -1079,24 +1062,6 @@ class OpenAIBackendAPI:
         path = f"/backend-api/conversation/{conversation_id}"
         response = self.session.get(self.base_url + path, headers=self._headers(path, {"Accept": "application/json"}),
                                     timeout=60)
-        ensure_ok(response, path)
-        return response.json()
-
-    def delete_conversation(self, conversation_id: str) -> Dict[str, Any]:
-        """删除本地对话记录。"""
-        path = f"/backend-api/conversation/{conversation_id}"
-        headers = self._headers(path, {
-            "Accept": "*/*",
-            "Content-Type": "application/json",
-            "Referer": f"{self.base_url}/c/{conversation_id}",
-            "X-OpenAI-Target-Route": "/backend-api/conversation/{conversation_id}",
-        })
-        response = self.session.patch(
-            self.base_url + path,
-            headers=headers,
-            json={"is_visible": False},
-            timeout=60,
-        )
         ensure_ok(response, path)
         return response.json()
 
@@ -2180,10 +2145,6 @@ class OpenAIBackendAPI:
         sediment_ids: list[str] = []
         self._add_unique(file_ids, initial_file_ids or [])
         self._add_unique(sediment_ids, initial_sediment_ids or [])
-        has_initial_ids = bool(file_ids or sediment_ids)
-        last_hit_key: tuple[tuple[str, ...], tuple[str, ...]] | None = (
-            (tuple(file_ids), tuple(sediment_ids)) if has_initial_ids else None
-        )
         logger.info({
             "event": "image_poll_start",
             "conversation_id": conversation_id,
@@ -2197,11 +2158,7 @@ class OpenAIBackendAPI:
         def _remaining() -> float:
             return timeout_secs - (time.time() - start)
 
-        if has_initial_ids and config.image_settle_enabled:
-            settle_for = min(config.image_settle_secs, max(0.0, _remaining()))
-            if settle_for > 0:
-                time.sleep(settle_for)
-        elif initial_wait > 0:
+        if initial_wait > 0:
             jitter = random.uniform(0, min(2.0, initial_wait * 0.2))
             sleep_for = min(initial_wait + jitter, max(0.0, _remaining()))
             if sleep_for > 0:
@@ -2297,29 +2254,8 @@ class OpenAIBackendAPI:
             logger.debug({"event": "image_poll_check", "conversation_id": conversation_id, "attempt": attempt,
                           "file_ids": file_ids, "sediment_ids": sediment_ids})
             if file_ids or sediment_ids:
-                if not config.image_check_before_hit_enabled:
-                    # 先check再hit 机制关闭：直接返回首次发现的 file_ids
-                    logger.info({"event": "image_poll_hit_no_settle", "conversation_id": conversation_id,
-                                 "file_ids": file_ids, "sediment_ids": sediment_ids})
-                    return file_ids, sediment_ids
-                hit_key = (tuple(file_ids), tuple(sediment_ids))
-                if last_hit_key == hit_key:
-                    logger.info({"event": "image_poll_hit", "conversation_id": conversation_id, "file_ids": file_ids,
-                                 "sediment_ids": sediment_ids})
-                    return file_ids, sediment_ids
-                last_hit_key = hit_key
-                if not config.image_settle_enabled:
-                    # 二次确认机制关闭：直接返回首次发现的 file_ids
-                    logger.info({"event": "image_poll_hit_settle_disabled", "conversation_id": conversation_id,
-                                 "file_ids": file_ids, "sediment_ids": sediment_ids})
-                    return file_ids, sediment_ids
-                logger.info({"event": "image_poll_hit_pending_settle", "conversation_id": conversation_id,
-                             "file_ids": file_ids, "sediment_ids": sediment_ids,
-                             "settle_secs": config.image_settle_secs})
-                wait = min(config.image_settle_secs, max(0.0, _remaining()))
-                if wait > 0:
-                    time.sleep(wait)
-                    continue
+                logger.info({"event": "image_poll_hit", "conversation_id": conversation_id,
+                             "file_ids": file_ids, "sediment_ids": sediment_ids})
                 return file_ids, sediment_ids
             logger.debug({"event": "image_poll_wait", "conversation_id": conversation_id,
                           "elapsed_secs": round(time.time() - start, 1)})
@@ -2519,60 +2455,22 @@ class OpenAIBackendAPI:
     ) -> list[str]:
         file_ids = [item for item in file_ids if item != "file_upload"]
         sediment_ids = list(sediment_ids)
-        timeout = poll_timeout_secs if poll_timeout_secs is not None else config.image_poll_timeout_secs
-        # 当 check-before-hit 和 settle 均已关闭，且 SSE 已给出 file_ids 时，
-        # 跳过轮询直接解析 URL，省去 initial_wait + 轮询耗时。
-        if poll and conversation_id and (file_ids or sediment_ids):
-            if not config.image_check_before_hit_enabled and not config.image_settle_enabled:
-                logger.info({
-                    "event": "image_resolve_skip_poll_direct_resolve",
-                    "conversation_id": conversation_id,
-                    "file_ids": file_ids,
-                    "sediment_ids": sediment_ids,
-                })
-                return self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
-        if poll and conversation_id:
+        if poll and conversation_id and not (file_ids or sediment_ids):
+            timeout = poll_timeout_secs if poll_timeout_secs is not None else config.image_poll_timeout_secs
             logger.info({
                 "event": "image_resolve_poll_needed",
                 "conversation_id": conversation_id,
-                "initial_file_ids": file_ids,
-                "initial_sediment_ids": sediment_ids,
                 "poll_timeout_secs": timeout,
             })
             try:
-                polled_file_ids, polled_sediment_ids = self._poll_image_results(
-                    conversation_id,
-                    timeout,
-                    file_ids,
-                    sediment_ids,
-                )
+                file_ids, sediment_ids = self._poll_image_results(conversation_id, timeout)
             except ImagePollTimeoutError as exc:
                 # 如果轮询超时且有 task error（如 moderation 拦截），抛出 ImageContentPolicyError
                 # 而非 ImagePollTimeoutError，让调用方能区分真正的超时和上游拒绝
                 task_error = getattr(exc, "task_error", "")
-                if not file_ids and not sediment_ids:
-                    if task_error:
-                        raise ImageContentPolicyError(task_error, conversation_id or "") from exc
-                    raise
-                logger.warning({
-                    "event": "image_resolve_poll_partial_timeout",
-                    "conversation_id": conversation_id,
-                    "file_ids": file_ids,
-                    "sediment_ids": sediment_ids,
-                })
-            except Exception as exc:
-                if not file_ids and not sediment_ids:
-                    raise
-                logger.warning({
-                    "event": "image_resolve_poll_partial_error",
-                    "conversation_id": conversation_id,
-                    "file_ids": file_ids,
-                    "sediment_ids": sediment_ids,
-                    "error": repr(exc),
-                })
-            else:
-                file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
-                sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
+                if task_error:
+                    raise ImageContentPolicyError(task_error, conversation_id) from exc
+                raise
         return self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
 
     def download_image_bytes(self, urls: list[str]) -> list[bytes]:

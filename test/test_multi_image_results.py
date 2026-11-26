@@ -111,22 +111,23 @@ class MultiImageResultTests(unittest.TestCase):
         self.assertEqual(file_ids, ["file-first", "file-second", "file-third"])
         self.assertEqual(sediment_ids, ["sed-first"])
 
-    def test_poll_waits_for_generated_asset_ids_to_settle(self) -> None:
+    def test_poll_returns_as_soon_as_generated_assets_are_found(self) -> None:
         backend = FakeBackend([
-            _conversation(["file-one"]),
-            _conversation(["file-one", "file-two"], ["sed-one"]),
+            _conversation([]),
             _conversation(["file-one", "file-two"], ["sed-one"]),
         ])
 
         with (
-            mock.patch.dict(config.data, {"image_poll_initial_wait_secs": 0, "image_poll_interval_secs": 0.5, "image_settle_enabled": True, "image_check_before_hit_enabled": True}),
-            mock.patch("services.openai_backend_api.time.sleep", lambda _seconds: None),
+            mock.patch.dict(config.data, {"image_poll_initial_wait_secs": 0, "image_poll_interval_secs": 0.5}),
+            mock.patch.object(backend, "_query_backend_tasks", return_value=[]),
+            mock.patch("services.openai_backend_api.time.sleep") as sleep,
         ):
             file_ids, sediment_ids = backend._poll_image_results("conv-1", timeout_secs=10)
 
         self.assertEqual(file_ids, ["file-one", "file-two"])
         self.assertEqual(sediment_ids, ["sed-one"])
-        self.assertEqual(backend.calls, 3)
+        self.assertEqual(backend.calls, 2)
+        sleep.assert_called_once_with(0.5)
 
     def test_resolver_uses_file_and_sediment_urls(self) -> None:
         backend = FakeBackend()
@@ -144,15 +145,15 @@ class MultiImageResultTests(unittest.TestCase):
             "https://attachments.test/two.png",
         ])
 
-    def test_resolver_keeps_stream_ids_when_poll_extension_fails(self) -> None:
+    def test_resolver_uses_stream_ids_without_polling(self) -> None:
         backend = FakeBackend()
         backend.file_urls = {"file-one": "https://files.test/one.png"}
-        backend._get_conversation = mock.Mock(side_effect=RuntimeError("poll failed"))
 
-        with mock.patch("services.openai_backend_api.time.sleep", lambda _seconds: None):
+        with mock.patch.object(backend, "_poll_image_results") as poll:
             urls = backend.resolve_conversation_image_urls("conv-1", ["file-one"], [], poll=True)
 
         self.assertEqual(urls, ["https://files.test/one.png"])
+        poll.assert_not_called()
 
     def test_responses_stream_emits_all_image_output_items(self) -> None:
         first = base64.b64encode(b"first").decode("ascii")

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from curl_cffi import requests
 from PIL import Image, ImageOps
 
+from services import fal_esrgan
 from services.image_resolution import contained_dimensions, parse_dimensions
 from utils.log import logger
 
@@ -35,12 +36,21 @@ def _headers() -> dict[str, str]:
 
 
 def worker_ready(settings: dict[str, object]) -> dict[str, object]:
+    if settings.get("provider") == "fal":
+        if settings.get("fal_api_key"):
+            return {"ok": True, "message": "已保存 fal API 密钥，有效性在实际超分时验证。"}
+        return {"ok": False, "message": "请填写并保存 fal API 密钥。"}
     try:
+        headers = _headers()
         with requests.Session(trust_env=False) as session:
-            response = session.get(f"{settings['worker_url']}/health/ready", headers=_headers(), timeout=5, allow_redirects=False)
+            response = session.get(f"{settings['worker_url']}/health/ready", headers=headers, timeout=5, allow_redirects=False)
             try:
                 if response.status_code == 200:
                     return {"ok": True, "message": "超分服务和模型已就绪"}
+                if response.status_code == 401:
+                    if not headers:
+                        return {"ok": False, "message": "超分服务鉴权失败（HTTP 401）。请为主 API 设置 SUPER_RESOLUTION_WORKER_SECRET。"}
+                    return {"ok": False, "message": "超分服务鉴权失败（HTTP 401）。请确认主 API 和超分服务的 SUPER_RESOLUTION_WORKER_SECRET 一致。"}
                 return {"ok": False, "message": f"超分服务未就绪（HTTP {response.status_code}）"}
             finally:
                 response.close()
@@ -51,6 +61,13 @@ def worker_ready(settings: dict[str, object]) -> dict[str, object]:
 def super_resolve(data: bytes, settings: dict[str, object], *, target_size: tuple[int, int] | None = None) -> bytes:
     if len(data) > MAX_BODY_BYTES:
         raise ValueError("image_too_large")
+    if settings.get("provider") == "fal":
+        result = fal_esrgan.upscale(
+            data, target_size, int(settings["timeout_secs"]), MAX_BODY_BYTES,
+            api_key=str(settings.get("fal_api_key") or ""),
+        )
+        logger.info({"event": "fal_esrgan_completed", "request_id": result.request_id, "inference_time": result.inference_seconds})
+        return result.image
     with requests.Session(trust_env=False) as session:
         response = session.post(
             f"{settings['worker_url']}/v1/super-resolution", data=data,
@@ -101,12 +118,17 @@ def calibrate_image(data: bytes, requested_size: str | None, settings: dict[str,
                 full_size = (oriented_size[0] * 4, oriented_size[1] * 4)
                 expected_size = contained_dimensions(full_size, target)
                 with Image.open(io.BytesIO(upscaled)) as output:
-                    # Older workers ignore the target header and return full x4.
-                    if output.size not in {full_size, expected_size}:
+                    if settings.get("provider") == "fal":
+                        # Fractional scales may round one edge down by one pixel.
+                        fal_size = expected_size if max(expected_size) <= max(full_size) else full_size
+                        if any(abs(a - b) > 1 for a, b in zip(output.size, fal_size)):
+                            raise ValueError("invalid_fal_dimensions")
+                    elif output.size not in {full_size, expected_size}:
+                        # Older workers ignore the target header and return full x4.
                         raise ValueError("invalid_worker_dimensions")
                     if output.width * output.height > MAX_DECODE_PIXELS:
                         raise ValueError("worker_output_too_large")
-                    worker_alpha = "A" in output.getbands() or "transparency" in output.info
+                    worker_alpha = settings.get("provider") != "fal" and ("A" in output.getbands() or "transparency" in output.info)
                     source = images.enter_context(output.convert("RGBA" if has_alpha and worker_alpha else "RGB"))
                 if has_alpha and not worker_alpha:
                     with Image.open(io.BytesIO(data)) as original, ExitStack() as originals:
@@ -114,7 +136,7 @@ def calibrate_image(data: bytes, requested_size: str | None, settings: dict[str,
                         rgba = transposed if transposed.mode == "RGBA" else originals.enter_context(transposed.convert("RGBA"))
                         with rgba.getchannel("A") as alpha, alpha.resize(source.size, Image.Resampling.LANCZOS) as resized_alpha:
                             source.putalpha(resized_alpha)
-            output_size = contained_dimensions(source.size, target)
+            output_size = expected_size if mode == "super_resolution" and settings.get("provider") == "fal" else contained_dimensions(source.size, target)
             output = source if source.size == output_size else images.enter_context(source.resize(output_size, Image.Resampling.LANCZOS))
             with io.BytesIO() as buffer:
                 output.save(buffer, format="PNG")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -122,6 +123,25 @@ class ImageCalibrationTests(unittest.TestCase):
         self.assertFalse(status["ok"])
         self.assertNotIn("secret", status["message"])
 
+    def test_health_distinguishes_missing_and_rejected_worker_secret(self):
+        with TestClient(create_worker(upscaler=mock.Mock(), secret="worker-test-value")) as client:
+            def check_ready(_url, *, headers, **_kwargs):
+                return client.get("/health/ready", headers=headers)
+
+            with mock.patch("services.image_calibration.requests.Session.get", side_effect=check_ready):
+                for secret, expected_hint in [("", "为主 API 设置"), ("incorrect-test-value", "主 API 和超分服务")]:
+                    with self.subTest(expected_hint=expected_hint), mock.patch.dict(os.environ, {"SUPER_RESOLUTION_WORKER_SECRET": secret}):
+                        status = worker_ready(self.settings)
+                        self.assertFalse(status["ok"])
+                        self.assertIn("HTTP 401", status["message"])
+                        self.assertIn(expected_hint, status["message"])
+                        self.assertIn("SUPER_RESOLUTION_WORKER_SECRET", status["message"])
+                        self.assertNotIn("incorrect-test-value", status["message"])
+                        self.assertNotIn("worker-test-value", status["message"])
+
+                with mock.patch.dict(os.environ, {"SUPER_RESOLUTION_WORKER_SECRET": "worker-test-value"}):
+                    self.assertTrue(worker_ready(self.settings)["ok"])
+
     def test_task_rejects_invalid_size_before_start(self):
         with tempfile.TemporaryDirectory() as directory:
             service = ImageTaskService(path=Path(directory) / "tasks.json")
@@ -156,7 +176,7 @@ class ImageCalibrationTests(unittest.TestCase):
         config.data = dict(previous)
         with mock.patch.object(config, "_save"):
             result = config.update({"image_calibration": self.settings})
-        self.assertEqual(result["image_calibration"], self.settings)
+        self.assertEqual(calibration_settings(result["image_calibration"]), self.settings)
         with mock.patch.object(config, "_save", side_effect=OSError("test")):
             with self.assertRaises(OSError):
                 config.update({"image_calibration": DEFAULT_CALIBRATION})
@@ -164,6 +184,54 @@ class ImageCalibrationTests(unittest.TestCase):
 
 
 class ImageCalibrationAPITests(unittest.TestCase):
+    def test_fal_key_is_write_only_and_can_be_rotated_or_cleared(self):
+        from api.system import create_router
+
+        app = FastAPI()
+        app.include_router(create_router("test"))
+        client = TestClient(app)
+        settings = {**DEFAULT_CALIBRATION, "provider": "fal"}
+        save_url = "/api/settings"
+        check_url = "/api/image-calibration/test"
+        submitted = {"image_calibration": {**settings, "fal_api_key": "test-id:test-secret"}}
+        self.assertEqual(client.post(save_url, json=submitted).status_code, 401)
+
+        headers = {"Authorization": f"Bearer {config.auth_key}"}
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(config, "path", Path(directory) / "config.json"),
+            mock.patch.object(config, "data", {**config.data, "image_calibration": settings}),
+            mock.patch.dict(os.environ, {"FAL_KEY": "test-id:environment"}),
+        ):
+            unsaved = client.post(check_url, json=submitted["image_calibration"], headers=headers)
+            self.assertFalse(unsaved.json()["ok"])
+            saved = client.post(save_url, json=submitted, headers=headers)
+            self.assertEqual(saved.status_code, 200)
+            public = client.get(save_url, headers=headers)
+            for response in (saved, public):
+                calibration = response.json()["config"]["image_calibration"]
+                self.assertEqual(calibration["fal_key_source"], "settings")
+                self.assertNotIn("fal_api_key", calibration)
+                self.assertNotIn("test-id:test-secret", response.text)
+            self.assertTrue(client.post(check_url, json=settings, headers=headers).json()["ok"])
+
+            for field in ({"timeout_secs": 180}, {"fal_api_key": "  "}):
+                self.assertEqual(client.post(save_url, json={"image_calibration": field}, headers=headers).status_code, 200)
+                self.assertEqual(config.get_image_calibration_settings()["fal_api_key"], "test-id:test-secret")
+            malformed = client.post(save_url, json={"image_calibration": {"fal_api_key": "bad\nsecond"}}, headers=headers)
+            self.assertEqual(malformed.status_code, 400)
+            self.assertNotIn("second", malformed.text)
+            self.assertEqual(config.get_image_calibration_settings()["fal_api_key"], "test-id:test-secret")
+
+            rotated = client.post(save_url, json={"image_calibration": {"fal_api_key": "test-id:rotated"}}, headers=headers)
+            self.assertEqual(rotated.status_code, 200)
+            self.assertEqual(config._load()["image_calibration"]["fal_api_key"], "test-id:rotated")
+            cleared = client.post(save_url, json={"image_calibration": {"fal_api_key": None}}, headers=headers)
+            self.assertEqual(cleared.status_code, 200)
+            self.assertIsNone(cleared.json()["config"]["image_calibration"]["fal_key_source"])
+            self.assertNotIn("fal_api_key", config._load()["image_calibration"])
+            self.assertFalse(client.post(check_url, json=settings, headers=headers).json()["ok"])
+
     def test_invalid_generation_size_returns_400_without_upstream(self):
         from api.ai import create_router
         app = FastAPI()

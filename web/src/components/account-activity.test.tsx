@@ -56,8 +56,10 @@ test("activity merge updates only counts, preserves mutations and never resurrec
 
 test("activity badges distinguish image counts from Grok requests without requiring motion", () => {
   const image = renderToStaticMarkup(<AccountActivityBadge count={2} />);
+  const limited = renderToStaticMarkup(<AccountActivityBadge count={1} quotaLimited />);
   const grok = renderToStaticMarkup(<AccountActivityBadge count={3} kind="request" />);
   assert.match(image, /生成中 · 2 张/);
+  assert.match(limited, /已接任务 · 1 张/);
   assert.match(grok, /处理中 · 3 个请求/);
   assert.doesNotMatch(grok, /张/);
   assert.match(image, /role="status"/);

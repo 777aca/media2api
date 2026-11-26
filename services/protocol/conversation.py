@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import re
-import threading
 import time
 from dataclasses import dataclass, field
 from math import gcd
@@ -890,31 +889,6 @@ def _get_detailed_error_from_tasks(
             "error": str(exc),
         })
         return ""
-
-
-def _remove_image_conversation_later(
-        backend: OpenAIBackendAPI,
-        conversation_id: str,
-        *,
-        success: bool,
-) -> None:
-    if not conversation_id:
-        return
-    if not (config.image_remove_conversation_always or (success and config.image_remove_conversation_after_result)):
-        return
-
-    def _run() -> None:
-        try:
-            backend.delete_conversation(conversation_id)
-            logger.info({"event": "image_conversation_removed", "conversation_id": conversation_id})
-        except Exception as exc:
-            logger.warning({
-                "event": "image_conversation_remove_failed",
-                "conversation_id": conversation_id,
-                "error": str(exc),
-            })
-
-    threading.Thread(target=_run, name=f"remove-image-conversation-{conversation_id}", daemon=True).start()
 
 
 def stream_image_outputs(

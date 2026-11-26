@@ -26,21 +26,12 @@ export function ConfigCard({ section = "pool" }: { section?: keyof typeof sectio
   const isLoadingConfig = useSettingsStore((state) => state.isLoadingConfig);
   const isSavingConfig = useSettingsStore((state) => state.isSavingConfig);
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
-  const setImageRetentionHours = useSettingsStore((state) => state.setImageRetentionHours);
-  const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
-  const setImageSettleEnabled = useSettingsStore((state) => state.setImageSettleEnabled);
-  const setImageRemoveConversationAfterResult = useSettingsStore((state) => state.setImageRemoveConversationAfterResult);
-  const setImageRemoveConversationAlways = useSettingsStore((state) => state.setImageRemoveConversationAlways);
-  const setImageSettleSecs = useSettingsStore((state) => state.setImageSettleSecs);
-  const setImageTimeoutRetrySecs = useSettingsStore((state) => state.setImageTimeoutRetrySecs);
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
   const setAutoRemoveRateLimitedAccounts = useSettingsStore((state) => state.setAutoRemoveRateLimitedAccounts);
   const setAutoReloginAfterRefresh = useSettingsStore((state) => state.setAutoReloginAfterRefresh);
   const setLogLevel = useSettingsStore((state) => state.setLogLevel);
   const setBaseUrl = useSettingsStore((state) => state.setBaseUrl);
   const setGlobalSystemPrompt = useSettingsStore((state) => state.setGlobalSystemPrompt);
-  const setDefaultUpstreamModelName = useSettingsStore((state) => state.setDefaultUpstreamModelName);
-  const setDefaultThinkingEffort = useSettingsStore((state) => state.setDefaultThinkingEffort);
   const setSensitiveWordsText = useSettingsStore((state) => state.setSensitiveWordsText);
   const setAIReviewField = useSettingsStore((state) => state.setAIReviewField);
   const setImageStorageField = useSettingsStore((state) => state.setImageStorageField);
@@ -72,7 +63,6 @@ export function ConfigCard({ section = "pool" }: { section?: keyof typeof sectio
   const hasBackupR2 = Boolean(
     config?.backup?.account_id || config?.backup?.access_key_id || config?.backup?.bucket,
   );
-
   return (
     <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
       <CardContent className="space-y-4 p-6">
@@ -80,7 +70,6 @@ export function ConfigCard({ section = "pool" }: { section?: keyof typeof sectio
           <h2 className="text-lg font-semibold">{sectionTitles[section]}</h2>
           {section === "pool" && <p className="text-sm text-stone-500">管理 ChatGPT / Codex 账号的自动刷新与异常处理。Grok 独立配置在 Grok 页签。</p>}
         </div>
-        {section === "images" && <ImageCalibrationSettingsCard />}
         <fieldset disabled={!config || isSavingConfig} className="grid items-start gap-4 md:grid-cols-2">
           {section === "pool" && <>
           <div className="space-y-2">
@@ -124,123 +113,18 @@ export function ConfigCard({ section = "pool" }: { section?: keyof typeof sectio
             自动移除限流账号
           </label>
           </>}
-          {section === "images" && <>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片访问地址</label>
+          {section === "images" && <ImageCalibrationSettingsCard />}
+          {section === "storage" && <>
+          <label className="block space-y-2 text-sm text-stone-700 md:col-span-2">
+            <span>图片访问地址</span>
             <Input
               value={String(config?.base_url || "")}
               onChange={(event) => setBaseUrl(event.target.value)}
               placeholder="https://example.com"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">用于生成图片结果的访问前缀地址。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">默认请求上游模型名称</label>
-            <Input
-              value={String(config?.default_upstream_model_name || "")}
-              onChange={(event) => setDefaultUpstreamModelName(event.target.value)}
-              placeholder="gpt-5-5"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">gpt-image-2 发起图片请求时使用的上游模型名称，默认 gpt-5-5。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">默认思考强度</label>
-            <Select
-              value={String(config?.default_thinking_effort || "auto")}
-              onValueChange={(value) => setDefaultThinkingEffort(value as "auto" | "standard" | "extended" | "max")}
-            >
-              <SelectTrigger className="h-10 rounded-xl border-stone-200 bg-white">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">Auto（不传递）</SelectItem>
-                <SelectItem value="standard">Standard</SelectItem>
-                <SelectItem value="extended">Extended</SelectItem>
-                <SelectItem value="max">Max</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-stone-500">模型名称以 -standard、-extended 或 -max 结尾时，模型后缀优先。</p>
-          </div>
-          <div className="space-y-2">
-            <label htmlFor="settings-image-retention-hours" className="text-sm text-stone-700">图片有效期（小时）</label>
-            <Input
-              id="settings-image-retention-hours"
-              type="number"
-              min={1}
-              max={36500 * 24}
-              step={1}
-              value={String(config?.image_retention_hours || "")}
-              onChange={(event) => setImageRetentionHours(event.target.value)}
-              placeholder="360"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">最少 1 小时，24 小时 = 1 天。与图片管理共用设置。到期同步删除本地及 R2/S3 图片，失败保留记录并重试；保留生成记录和调用日志，WebDAV 远程副本不受影响。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片轮询超时</label>
-            <Input
-              value={String(config?.image_poll_timeout_secs || "")}
-              onChange={(event) => setImagePollTimeoutSecs(event.target.value)}
-              placeholder="120"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">单位秒，等待上游图片结果的最长时间。</p>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3">
-              <Checkbox
-                checked={Boolean(config?.image_settle_enabled !== false)}
-                onCheckedChange={(checked) => setImageSettleEnabled(Boolean(checked))}
-              />
-              <span className="text-sm text-stone-700">图片二次确认机制</span>
-            </div>
-            <p className="text-xs text-stone-500">打开后能稍微提升获取图片的成功率。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片二次确认等待时间</label>
-            <Input
-              value={String(config?.image_settle_secs || "2.0")}
-              onChange={(event) => setImageSettleSecs(event.target.value)}
-              placeholder="2.0"
-              className="h-10 rounded-xl border-stone-200 bg-white disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!config?.image_settle_enabled}
-            />
-            <p className="text-xs text-stone-500">单位秒，找到图片后等待多久再次确认。需配合图片二次确认机制使用。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片超时继续等待时间</label>
-            <Input
-              value={String(config?.image_timeout_retry_secs || "30")}
-              onChange={(event) => setImageTimeoutRetrySecs(event.target.value)}
-              placeholder="360"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">单位秒，超时后点击“继续等待”额外等待的时间。</p>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3">
-              <Checkbox
-                checked={Boolean(config?.image_remove_conversation_after_result)}
-                onCheckedChange={(checked) => setImageRemoveConversationAfterResult(Boolean(checked))}
-              />
-              <span className="text-sm text-stone-700">出图后移除本地对话</span>
-            </div>
-            <p className="text-xs text-stone-500">成功拿到图片后，异步隐藏 ChatGPT 侧对应的本地对话记录。</p>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3">
-              <Checkbox
-                checked={Boolean(config?.image_remove_conversation_always)}
-                onCheckedChange={(checked) => setImageRemoveConversationAlways(Boolean(checked))}
-              />
-              <span className="text-sm text-stone-700">没出图也移除本地对话</span>
-            </div>
-            <p className="text-xs text-stone-500">失败、超时或只返回文本时也一并隐藏对话记录（打开后包含出图成功的情况）。</p>
-          </div>
-          </>}
-          {section === "storage" && <>
+            <span className="block text-xs text-stone-500">留空时默认使用请求地址生成图片链接。</span>
+          </label>
           <div className="space-y-4 rounded-xl border border-stone-200 bg-white px-4 py-3 md:col-span-2">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <label className="flex items-center gap-3 text-sm text-stone-700">
