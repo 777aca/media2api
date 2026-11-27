@@ -2,6 +2,13 @@
 
 历史记录见 [迁移前更新记录](docs/legacy-changelog.md)。
 
+## 0.1.19 - 2026-11-27
+
++ [修复] ChatGPT / Codex 账号导入支持按 `user_id`、`email`、JWT `sub` 与 `refresh_token` 去重，覆盖页面导入、API Key 接口导入、OAuth 登录、CPA 与 Sub2API 批量导入及同批次重复项；避免仅按 `access_token` 精确匹配导致同一账号反复入池。
++ [修复] 重复导入同一账号时保留原号池标识、调度配置与历史统计，新旧 JWT 冲突时优先保留更新的 Token，不透明 Token 刷新拿到身份后自动合并；同 Team 工作区不同成员不会误判为重复。
++ [修复] Grok 账号导入支持在 `sso_token` 轮换时按非空 `email` / `user_id` 去重并原地更新。
++ [验证] 64 项账号与 Grok 隔离单元测试（含新增 7 项去重专项用例）全部通过。
+
 ## 0.1.18 - 2026-11-26
 
 + [新增] 图片分辨率校准支持 fal.ai Real-ESRGAN。管理员可在设置页保存、更新和清除 fal API 密钥。检查配置无需提交推理任务。

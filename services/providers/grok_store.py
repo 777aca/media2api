@@ -66,6 +66,17 @@ class GrokStore:
             for entry in entries:
                 fingerprint = hashlib.sha256(entry["sso_token"].encode()).hexdigest()
                 row = self.db.execute("SELECT id,metadata FROM grok_accounts WHERE fingerprint=?", (fingerprint,)).fetchone()
+                if not row:
+                    entry_user_id = str(entry.get("user_id") or "").strip()
+                    entry_email = str(entry.get("email") or "").strip().casefold()
+                    if entry_user_id or entry_email:
+                        for candidate in self.db.execute("SELECT id,metadata FROM grok_accounts").fetchall():
+                            candidate_meta = json.loads(candidate[1])
+                            cand_uid = str(candidate_meta.get("user_id") or "").strip()
+                            cand_email = str(candidate_meta.get("email") or "").strip().casefold()
+                            if (entry_user_id and cand_uid == entry_user_id) or (entry_email and cand_email == entry_email):
+                                row = candidate
+                                break
                 metadata = json.loads(row[1]) if row else {"id": uuid.uuid4().hex, "provider": "grok_web",
                     "enabled": True, "status": "active", "tier": "auto", "created_at": time.time()}
                 metadata.update({k: entry[k] for k in ("name", "tier", "email", "user_id") if entry.get(k)})

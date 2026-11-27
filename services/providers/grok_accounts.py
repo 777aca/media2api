@@ -27,7 +27,9 @@ def parse_import(value: str | list | dict) -> list[dict]:
         value = value.get("accounts", [value])
     if not isinstance(value, list) or not 1 <= len(value) <= 10000:
         raise HTTPException(400, "请输入 1–10000 个 Grok Web 账号")
-    result, seen = [], set()
+    result: list[dict] = []
+    seen_tokens: dict[str, int] = {}
+    seen_identities: dict[tuple[str, str], int] = {}
     for item in value:
         if not isinstance(item, dict):
             raise HTTPException(400, "Grok 账号格式无效")
@@ -41,10 +43,43 @@ def parse_import(value: str | list | dict) -> list[dict]:
         tier = item.get("tier") or "auto"
         if tier not in TIERS:
             raise HTTPException(400, "账号等级必须是 auto/basic/super/heavy")
-        if token not in seen:
-            result.append({**{k: str(item.get(k) or "")[:255] for k in ("name", "email", "user_id")},
-                           "sso_token": token, "cloudflare_cookies": cookies, "tier": tier})
-            seen.add(token)
+        entry = {
+            **{k: str(item.get(k) or "").strip()[:255] for k in ("name", "email", "user_id")},
+            "sso_token": token,
+            "cloudflare_cookies": cookies,
+            "tier": tier,
+        }
+        identity_keys: list[tuple[str, str]] = []
+        if entry["user_id"]:
+            identity_keys.append(("user_id", entry["user_id"]))
+        if entry["email"]:
+            identity_keys.append(("email", entry["email"].casefold()))
+
+        existing_index = seen_tokens.get(token)
+        if existing_index is None:
+            for key in identity_keys:
+                if key in seen_identities:
+                    existing_index = seen_identities[key]
+                    break
+
+        if existing_index is None:
+            idx = len(result)
+            result.append(entry)
+            seen_tokens[token] = idx
+            for key in identity_keys:
+                seen_identities[key] = idx
+        else:
+            merged = dict(result[existing_index])
+            for k in ("name", "email", "user_id", "cloudflare_cookies"):
+                if entry[k]:
+                    merged[k] = entry[k]
+            merged["sso_token"] = token
+            if tier != "auto" or not merged.get("tier"):
+                merged["tier"] = tier
+            result[existing_index] = merged
+            seen_tokens[token] = existing_index
+            for key in identity_keys:
+                seen_identities[key] = existing_index
     return result
 
 
